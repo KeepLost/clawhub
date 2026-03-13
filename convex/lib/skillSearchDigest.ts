@@ -1,6 +1,6 @@
 import type { Doc, Id } from '../_generated/dataModel'
 import type { MutationCtx } from '../_generated/server'
-import type { HydratableSkill } from './public'
+import type { HydratableSkill, PublicUser } from './public'
 
 function pick<T extends Record<string, unknown>, K extends keyof T>(obj: T, keys: K[]): Pick<T, K> {
   return Object.fromEntries(keys.map((k) => [k, obj[k]])) as Pick<T, K>
@@ -19,6 +19,7 @@ const SHARED_KEYS = [
   'canonicalSkillId',
   'forkOf',
   'latestVersionId',
+  'latestVersionSummary',
   'tags',
   'badges',
   'stats',
@@ -38,6 +39,10 @@ const SHARED_KEYS = [
 export type SkillSearchDigestFields = Pick<Doc<'skills'>, (typeof SHARED_KEYS)[number]> & {
   skillId: Id<'skills'>
   isSuspicious?: boolean
+  ownerHandle?: string
+  ownerName?: string
+  ownerDisplayName?: string
+  ownerImage?: string
 }
 
 /** Pick the subset of fields from a full skill doc needed for the digest. */
@@ -76,5 +81,40 @@ export async function upsertSkillSearchDigest(
     await ctx.db.patch(existing._id, fields)
   } else {
     await ctx.db.insert('skillSearchDigest', fields)
+  }
+}
+
+/**
+ * Extract pre-resolved owner info from a digest row.
+ * Returns null if the owner fields haven't been backfilled yet.
+ */
+export function digestToOwnerInfo(
+  digest: Pick<Doc<'skillSearchDigest'>, 'ownerHandle' | 'ownerName' | 'ownerDisplayName' | 'ownerImage' | 'ownerUserId'>,
+): { ownerHandle: string | null; owner: PublicUser | null } | null {
+  if (digest.ownerHandle === undefined) return null
+  // Empty string means backfilled but owner has no handle.
+  // Use userId as fallback handle, matching the live getOwnerInfo path.
+  const handle = digest.ownerHandle || undefined
+  const fallbackHandle = handle ?? String(digest.ownerUserId)
+  // Determine if we have real profile data (deactivated/deleted owners have
+  // all profile fields undefined, while handle-less visible owners still have
+  // name/displayName/image populated).
+  const hasProfileData =
+    digest.ownerName !== undefined ||
+    digest.ownerDisplayName !== undefined ||
+    digest.ownerImage !== undefined
+  return {
+    ownerHandle: fallbackHandle,
+    owner: (handle || hasProfileData)
+      ? {
+          _id: digest.ownerUserId,
+          _creationTime: 0,
+          handle,
+          name: digest.ownerName,
+          displayName: digest.ownerDisplayName,
+          image: digest.ownerImage,
+          bio: undefined,
+        }
+      : null,
   }
 }

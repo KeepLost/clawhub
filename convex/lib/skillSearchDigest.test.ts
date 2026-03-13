@@ -1,7 +1,7 @@
 /* @vitest-environment node */
 
 import { describe, expect, it } from 'vitest'
-import { extractDigestFields } from './skillSearchDigest'
+import { extractDigestFields, digestToOwnerInfo } from './skillSearchDigest'
 
 function makeSkillDoc(overrides: Record<string, unknown> = {}) {
   return {
@@ -102,10 +102,19 @@ describe('extractDigestFields', () => {
 
     expect(digest).not.toHaveProperty('moderationEvidence')
     expect(digest).not.toHaveProperty('quality')
-    expect(digest).not.toHaveProperty('latestVersionSummary')
+    expect(digest).toHaveProperty('latestVersionSummary')
     expect(digest).not.toHaveProperty('moderationNotes')
     expect(digest).not.toHaveProperty('moderationSummary')
     expect(digest).not.toHaveProperty('resourceId')
+  })
+
+  it('extractDigestFields does not include owner profile fields', () => {
+    const skill = makeSkillDoc()
+    const digest = extractDigestFields(skill as never)
+    expect(digest).not.toHaveProperty('ownerHandle')
+    expect(digest).not.toHaveProperty('ownerName')
+    expect(digest).not.toHaveProperty('ownerDisplayName')
+    expect(digest).not.toHaveProperty('ownerImage')
   })
 
   it('produces a digest that works with toPublicSkill when shaped as Doc<skills>', () => {
@@ -122,5 +131,76 @@ describe('extractDigestFields', () => {
     expect(fakeDoc.ownerUserId).toBe('users:owner')
     expect(fakeDoc.tags).toEqual({})
     expect(fakeDoc.stats).toBeDefined()
+  })
+})
+
+describe('digestToOwnerInfo', () => {
+  it('returns owner info when ownerHandle is present', () => {
+    const digest = {
+      ownerUserId: 'users:owner' as never,
+      ownerHandle: 'jdoe',
+      ownerName: 'John',
+      ownerDisplayName: 'John Doe',
+      ownerImage: 'https://example.com/avatar.png',
+    }
+    const result = digestToOwnerInfo(digest)
+    expect(result).not.toBeNull()
+    expect(result!.ownerHandle).toBe('jdoe')
+    expect(result!.owner).toEqual({
+      _id: 'users:owner',
+      _creationTime: 0,
+      handle: 'jdoe',
+      name: 'John',
+      displayName: 'John Doe',
+      image: 'https://example.com/avatar.png',
+      bio: undefined,
+    })
+  })
+
+  it('returns null when ownerHandle is undefined (pre-backfill)', () => {
+    const digest = {
+      ownerUserId: 'users:owner' as never,
+      ownerHandle: undefined,
+      ownerName: undefined,
+      ownerDisplayName: undefined,
+      ownerImage: undefined,
+    }
+    expect(digestToOwnerInfo(digest)).toBeNull()
+  })
+
+  it('uses userId as fallback handle when ownerHandle is empty string', () => {
+    const digest = {
+      ownerUserId: 'users:owner' as never,
+      ownerHandle: '',
+      ownerName: 'No Handle User',
+      ownerDisplayName: 'No Handle',
+      ownerImage: 'https://example.com/avatar.png',
+    }
+    const result = digestToOwnerInfo(digest)
+    expect(result).not.toBeNull()
+    expect(result!.ownerHandle).toBe('users:owner')
+    expect(result!.owner).toEqual({
+      _id: 'users:owner',
+      _creationTime: 0,
+      handle: undefined,
+      name: 'No Handle User',
+      displayName: 'No Handle',
+      image: 'https://example.com/avatar.png',
+      bio: undefined,
+    })
+  })
+
+  it('returns null owner for deactivated user (empty handle, no profile data)', () => {
+    const digest = {
+      ownerUserId: 'users:deactivated' as never,
+      ownerHandle: '',
+      ownerName: undefined,
+      ownerDisplayName: undefined,
+      ownerImage: undefined,
+    }
+    const result = digestToOwnerInfo(digest)
+    expect(result).not.toBeNull()
+    expect(result!.ownerHandle).toBe('users:deactivated')
+    expect(result!.owner).toBeNull()
   })
 })

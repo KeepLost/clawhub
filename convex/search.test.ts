@@ -31,7 +31,7 @@ const hydrateResultsHandler = (
     _handler: (
       ctx: unknown,
       args: unknown,
-    ) => Promise<Array<{ skill: { slug: string; _id: string } }>>
+    ) => Promise<Array<{ skill: { slug: string; _id: string }; ownerHandle: string | null }>>
   }
 )._handler
 
@@ -338,6 +338,10 @@ describe('search helpers', () => {
       displayName: skillDoc.displayName,
       summary: skillDoc.summary,
       ownerUserId: skillDoc.ownerUserId,
+      ownerHandle: 'owner',
+      ownerName: 'Owner',
+      ownerDisplayName: 'Owner',
+      ownerImage: undefined,
       canonicalSkillId: skillDoc.canonicalSkillId,
       forkOf: skillDoc.forkOf,
       latestVersionId: skillDoc.latestVersionId,
@@ -357,15 +361,17 @@ describe('search helpers', () => {
       updatedAt: skillDoc.updatedAt,
     }
 
+    const getMock = vi.fn(async (id: string) => {
+      // Should NOT be called for skills:1 when digest exists
+      if (id === 'skills:1') throw new Error('Should not read full skill doc')
+      // Should NOT be called for users:owner when digest has owner fields
+      if (id === 'users:owner') throw new Error('Should not read users doc')
+      return null
+    })
     const result = await hydrateResultsHandler(
       {
         db: {
-          get: vi.fn(async (id: string) => {
-            if (id === 'users:owner') return { _id: 'users:owner', handle: 'owner' }
-            // Should NOT be called for skills:1 when digest exists
-            if (id === 'skills:1') throw new Error('Should not read full skill doc')
-            return null
-          }),
+          get: getMock,
           query: vi.fn((table: string) => ({
             withIndex: (index: string) => ({
               unique: vi.fn(async () => {
@@ -387,6 +393,7 @@ describe('search helpers', () => {
     expect(result).toHaveLength(1)
     expect(result[0].skill.slug).toBe('digest-skill')
     expect(result[0].skill._id).toBe('skills:1')
+    expect(result[0].ownerHandle).toBe('owner')
   })
 
   it('falls back to full skill doc when digest is missing', async () => {
@@ -557,10 +564,14 @@ function makeLexicalCtx(params: {
   exactSlugSkill: ReturnType<typeof makeSkillDoc> | null
   recentSkills: Array<ReturnType<typeof makeSkillDoc>>
 }) {
-  // Convert skill docs to digest-shaped rows (add skillId, keep shared fields).
+  // Convert skill docs to digest-shaped rows (add skillId + owner fields).
   const digestRows = params.recentSkills.map((skill) => ({
     ...skill,
     skillId: skill._id,
+    ownerHandle: 'owner',
+    ownerName: 'Owner',
+    ownerDisplayName: 'Owner',
+    ownerImage: undefined,
   }))
   return {
     db: {
