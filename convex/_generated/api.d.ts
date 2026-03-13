@@ -56,6 +56,7 @@ import type * as lib_githubSoulBackup from "../lib/githubSoulBackup.js";
 import type * as lib_globalStats from "../lib/globalStats.js";
 import type * as lib_httpHeaders from "../lib/httpHeaders.js";
 import type * as lib_httpRateLimit from "../lib/httpRateLimit.js";
+import type * as lib_httpUtils from "../lib/httpUtils.js";
 import type * as lib_leaderboards from "../lib/leaderboards.js";
 import type * as lib_manualOverrides from "../lib/manualOverrides.js";
 import type * as lib_moderation from "../lib/moderation.js";
@@ -158,6 +159,7 @@ declare const fullApi: ApiFromModules<{
   "lib/globalStats": typeof lib_globalStats;
   "lib/httpHeaders": typeof lib_httpHeaders;
   "lib/httpRateLimit": typeof lib_httpRateLimit;
+  "lib/httpUtils": typeof lib_httpUtils;
   "lib/leaderboards": typeof lib_leaderboards;
   "lib/manualOverrides": typeof lib_manualOverrides;
   "lib/moderation": typeof lib_moderation;
