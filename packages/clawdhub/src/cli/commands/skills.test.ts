@@ -63,7 +63,8 @@ vi.mock('node:fs/promises', () => ({
   stat: vi.fn(),
 }))
 
-const { clampLimit, cmdExplore, cmdInstall, cmdUninstall, cmdUpdate, formatExploreLine } = await import('./skills')
+const { clampLimit, cmdExplore, cmdInstall, cmdSearch, cmdUninstall, cmdUpdate, formatExploreLine } =
+  await import('./skills')
 const {
   extractZipToDir,
   hashSkillFiles,
@@ -121,6 +122,16 @@ describe('explore helpers', () => {
 })
 
 describe('cmdExplore', () => {
+  it('passes optional auth token to apiRequest', async () => {
+    mockGetOptionalAuthToken.mockResolvedValue('tkn')
+    mockApiRequest.mockResolvedValue({ items: [] })
+
+    await cmdExplore(makeOpts(), { limit: 25 })
+
+    const [, requestArgs] = mockApiRequest.mock.calls[0] ?? []
+    expect(requestArgs?.token).toBe('tkn')
+  })
+
   it('clamps limit and handles empty results', async () => {
     mockApiRequest.mockResolvedValue({ items: [] })
 
@@ -178,6 +189,18 @@ describe('cmdExplore', () => {
   })
 })
 
+describe('cmdSearch', () => {
+  it('passes optional auth token to apiRequest', async () => {
+    mockGetOptionalAuthToken.mockResolvedValue('tkn')
+    mockApiRequest.mockResolvedValue({ results: [] })
+
+    await cmdSearch(makeOpts(), 'demo')
+
+    const [, requestArgs] = mockApiRequest.mock.calls[0] ?? []
+    expect(requestArgs?.token).toBe('tkn')
+  })
+})
+
 describe('cmdUpdate', () => {
   it('uses path-based skill lookup when no local fingerprint is available', async () => {
     mockApiRequest.mockResolvedValue({ latestVersion: { version: '1.0.0' } })
@@ -226,6 +249,120 @@ describe('cmdInstall', () => {
     expect(requestArgs?.token).toBe('tkn')
     const [, zipArgs] = mockDownloadZip.mock.calls[0] ?? []
     expect(zipArgs?.token).toBe('tkn')
+  })
+
+  it('does not rm local directory when skill is malware-blocked (--force)', async () => {
+    vi.mocked(stat).mockResolvedValue({} as unknown as Awaited<ReturnType<typeof stat>>) // target exists
+    mockApiRequest.mockResolvedValue({
+      skill: { slug: 'demo', displayName: 'Demo', summary: null, tags: {}, stats: {}, createdAt: 0, updatedAt: 0 },
+      latestVersion: { version: '1.0.0' },
+      owner: null,
+      moderation: { isMalwareBlocked: true, isSuspicious: false },
+    })
+
+    await expect(cmdInstall(makeOpts(), 'demo', undefined, true)).rejects.toThrow(/malware/i)
+
+    expect(rm).not.toHaveBeenCalled()
+  })
+
+  it('does not rm local directory when API fetch fails (--force)', async () => {
+    vi.mocked(stat).mockResolvedValue({} as unknown as Awaited<ReturnType<typeof stat>>) // target exists
+    mockApiRequest.mockRejectedValue(new Error('Skill not found'))
+
+    await expect(cmdInstall(makeOpts(), 'demo', undefined, true)).rejects.toThrow(/not found/i)
+
+    expect(rm).not.toHaveBeenCalled()
+  })
+
+  it('does not rm local directory when requested version lookup fails (--force)', async () => {
+    vi.mocked(stat).mockResolvedValue({} as unknown as Awaited<ReturnType<typeof stat>>) // target exists
+    mockApiRequest
+      .mockResolvedValueOnce({
+        skill: { slug: 'demo', displayName: 'Demo', summary: null, tags: {}, stats: {}, createdAt: 0, updatedAt: 0 },
+        latestVersion: { version: '1.0.0' },
+        owner: null,
+        moderation: null,
+      })
+      .mockRejectedValueOnce(new Error('Version not found'))
+
+    await expect(cmdInstall(makeOpts(), 'demo', '9.9.9', true)).rejects.toThrow(
+      /version not found/i,
+    )
+
+    expect(rm).not.toHaveBeenCalled()
+    expect(mockApiRequest).toHaveBeenNthCalledWith(
+      2,
+      'https://clawhub.ai',
+      expect.objectContaining({
+        path: `${ApiRoutes.skills}/${encodeURIComponent('demo')}/versions/${encodeURIComponent('9.9.9')}`,
+      }),
+      expect.anything(),
+    )
+  })
+
+  it('validates requested version before rm when all checks pass (--force)', async () => {
+    vi.mocked(stat).mockResolvedValue({} as unknown as Awaited<ReturnType<typeof stat>>) // target exists
+    mockApiRequest
+      .mockResolvedValueOnce({
+        skill: { slug: 'demo', displayName: 'Demo', summary: null, tags: {}, stats: {}, createdAt: 0, updatedAt: 0 },
+        latestVersion: { version: '1.0.0' },
+        owner: null,
+        moderation: null,
+      })
+      .mockResolvedValueOnce({
+        version: {
+          version: '9.9.9',
+          createdAt: 0,
+          changelog: '',
+          changelogSource: null,
+          license: null,
+          files: [],
+        },
+        skill: { slug: 'demo', displayName: 'Demo' },
+      })
+    mockDownloadZip.mockResolvedValue(new Uint8Array([1, 2, 3]))
+    vi.mocked(readLockfile).mockResolvedValue({ version: 1, skills: {} })
+    vi.mocked(writeLockfile).mockResolvedValue()
+    vi.mocked(writeSkillOrigin).mockResolvedValue()
+    vi.mocked(extractZipToDir).mockResolvedValue()
+    vi.mocked(rm).mockResolvedValue()
+
+    await cmdInstall(makeOpts(), 'demo', '9.9.9', true)
+
+    expect(rm).toHaveBeenCalledWith('/work/skills/demo', { recursive: true, force: true })
+    expect(mockDownloadZip).toHaveBeenCalledWith(
+      'https://clawhub.ai',
+      expect.objectContaining({ slug: 'demo', version: '9.9.9' }),
+    )
+    const versionLookupOrder = mockApiRequest.mock.invocationCallOrder[1]
+    const rmOrder = vi.mocked(rm).mock.invocationCallOrder[0]
+    const downloadOrder = mockDownloadZip.mock.invocationCallOrder[0]
+    expect(versionLookupOrder).toBeLessThan(rmOrder)
+    expect(rmOrder).toBeLessThan(downloadOrder)
+  })
+
+  it('calls rm before download when all checks pass (--force)', async () => {
+    vi.mocked(stat).mockResolvedValue({} as unknown as Awaited<ReturnType<typeof stat>>) // target exists
+    mockApiRequest.mockResolvedValue({
+      skill: { slug: 'demo', displayName: 'Demo', summary: null, tags: {}, stats: {}, createdAt: 0, updatedAt: 0 },
+      latestVersion: { version: '1.0.0' },
+      owner: null,
+      moderation: null,
+    })
+    mockDownloadZip.mockResolvedValue(new Uint8Array([1, 2, 3]))
+    vi.mocked(readLockfile).mockResolvedValue({ version: 1, skills: {} })
+    vi.mocked(writeLockfile).mockResolvedValue()
+    vi.mocked(writeSkillOrigin).mockResolvedValue()
+    vi.mocked(extractZipToDir).mockResolvedValue()
+    vi.mocked(rm).mockResolvedValue()
+
+    await cmdInstall(makeOpts(), 'demo', undefined, true)
+
+    expect(rm).toHaveBeenCalledWith('/work/skills/demo', { recursive: true, force: true })
+    expect(mockDownloadZip).toHaveBeenCalled()
+    const rmOrder = vi.mocked(rm).mock.invocationCallOrder[0]
+    const downloadOrder = mockDownloadZip.mock.invocationCallOrder[0]
+    expect(rmOrder).toBeLessThan(downloadOrder)
   })
 })
 

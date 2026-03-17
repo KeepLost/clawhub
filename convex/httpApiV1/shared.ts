@@ -226,6 +226,7 @@ export async function parseMultipartPublish(
   displayName: string
   version: string
   changelog: string
+  acceptLicenseTerms?: boolean
   tags?: string[]
   forkOf?: { slug: string; version?: string }
   files: Array<{
@@ -270,11 +271,13 @@ export async function parseMultipartPublish(
   }
 
   const forkOf = payload.forkOf && typeof payload.forkOf === 'object' ? payload.forkOf : undefined
+  const hasAcceptLicenseTerms = Object.prototype.hasOwnProperty.call(payload, 'acceptLicenseTerms')
   const body = {
     slug: payload.slug,
     displayName: payload.displayName,
     version: payload.version,
     changelog: typeof payload.changelog === 'string' ? payload.changelog : '',
+    ...(hasAcceptLicenseTerms ? { acceptLicenseTerms: payload.acceptLicenseTerms } : {}),
     tags: Array.isArray(payload.tags) ? payload.tags : undefined,
     ...(payload.source ? { source: payload.source } : {}),
     files,
@@ -293,6 +296,7 @@ export function parsePublishBody(body: unknown) {
     displayName: parsed.displayName,
     version: parsed.version,
     changelog: parsed.changelog,
+    acceptLicenseTerms: parsed.acceptLicenseTerms,
     tags,
     source: parsed.source ?? undefined,
     forkOf: parsed.forkOf

@@ -4,8 +4,10 @@ import { TanStackRouterDevtoolsPanel } from '@tanstack/react-router-devtools'
 import { Analytics } from '@vercel/analytics/react'
 import { AppProviders } from '../components/AppProviders'
 import { ClientOnly } from '../components/ClientOnly'
+import { DeploymentDriftBanner } from '../components/DeploymentDriftBanner'
 import { Footer } from '../components/Footer'
 import Header from '../components/Header'
+import { isDevRuntime } from '../lib/runtimeEnv'
 import { getSiteDescription, getSiteMode, getSiteName, getSiteUrlForMode } from '../lib/site'
 
 import appCss from '../styles.css?url'
@@ -106,15 +108,18 @@ function RootDocument({ children }: { children: React.ReactNode }) {
         <HeadContent />
       </head>
       <body>
-        <ClientOnly>
-          <AppProviders>
-            <div className="app-shell">
-              <Header />
-              {children}
-              <Footer />
-            </div>
+        <AppProviders>
+          <div className="app-shell">
+            <Header />
+            <ClientOnly>
+              <DeploymentDriftBanner />
+            </ClientOnly>
+            {children}
+            <Footer />
+          </div>
+          <ClientOnly>
             <Analytics />
-            {import.meta.env.DEV ? (
+            {isDevRuntime() ? (
               <TanStackDevtools
                 config={{
                   position: 'bottom-right',
@@ -127,8 +132,8 @@ function RootDocument({ children }: { children: React.ReactNode }) {
                 ]}
               />
             ) : null}
-          </AppProviders>
-        </ClientOnly>
+          </ClientOnly>
+        </AppProviders>
         <Scripts />
       </body>
     </html>

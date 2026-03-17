@@ -1,6 +1,7 @@
-import { useAction, usePaginatedQuery } from 'convex/react'
+import { useAction } from 'convex/react'
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { api } from '../../../convex/_generated/api'
+import { convexHttp } from '../../convex/client'
 import { parseDir, parseSort, toListSort, type SortDir, type SortKey } from './-params'
 import type { SkillListEntry, SkillSearchEntry } from './-types'
 
@@ -23,6 +24,8 @@ type SkillsNavigate = (options: {
   replace?: boolean
 }) => void | Promise<void>
 
+type ListStatus = 'loading' | 'idle' | 'loadingMore' | 'done'
+
 export function useSkillsBrowseModel({
   search,
   navigate,
@@ -39,6 +42,7 @@ export function useSkillsBrowseModel({
   const searchRequest = useRef(0)
   const loadMoreRef = useRef<HTMLDivElement | null>(null)
   const loadMoreInFlightRef = useRef(false)
+  const navigateTimer = useRef<number>(0)
 
   const view: SkillsView = search.view ?? 'list'
   const highlightedOnly = search.highlighted ?? false
@@ -57,23 +61,55 @@ export function useSkillsBrowseModel({
     ? `${trimmedQuery}::${highlightedOnly ? '1' : '0'}::${nonSuspiciousOnly ? '1' : '0'}`
     : ''
 
-  const {
-    results: paginatedResults,
-    status: paginationStatus,
-    loadMore: loadMorePaginated,
-  } = usePaginatedQuery(
-    api.skills.listPublicPageV2,
-    hasQuery ? 'skip' : { sort: listSort, dir, highlightedOnly, nonSuspiciousOnly },
-    {
-      initialNumItems: pageSize,
+  // One-shot paginated fetches (no reactive subscription)
+  const [listResults, setListResults] = useState<SkillListEntry[]>([])
+  const [listCursor, setListCursor] = useState<string | null>(null)
+  const [listStatus, setListStatus] = useState<ListStatus>('loading')
+  const fetchGeneration = useRef(0)
+
+  const fetchPage = useCallback(
+    async (cursor: string | null, generation: number) => {
+      try {
+        const result = await convexHttp.query(api.skills.listPublicPageV4, {
+          cursor: cursor ?? undefined,
+          numItems: pageSize,
+          sort: listSort,
+          dir,
+          highlightedOnly,
+          nonSuspiciousOnly,
+        })
+        if (generation !== fetchGeneration.current) return
+        setListResults((prev) => (cursor ? [...prev, ...result.page] : result.page))
+        const canAdvance = result.hasMore && result.nextCursor != null
+        setListCursor(canAdvance ? result.nextCursor : null)
+        setListStatus(canAdvance ? 'idle' : 'done')
+      } catch (err) {
+        if (generation !== fetchGeneration.current) return
+        console.error('Failed to fetch skills page:', err)
+        // Reset to idle so the user can retry via "Load more"
+        setListStatus(cursor ? 'idle' : 'done')
+      }
     },
+    [listSort, dir, highlightedOnly, nonSuspiciousOnly],
   )
 
-  const isLoadingList = paginationStatus === 'LoadingFirstPage'
-  const canLoadMoreList = paginationStatus === 'CanLoadMore'
-  const isLoadingMoreList = paginationStatus === 'LoadingMore'
+  // Reset and fetch first page when sort/dir/filters change
+  useEffect(() => {
+    if (hasQuery) return
+    fetchGeneration.current += 1
+    const generation = fetchGeneration.current
+    setListResults([])
+    setListCursor(null)
+    setListStatus('loading')
+    void fetchPage(null, generation)
+  }, [hasQuery, fetchPage])
+
+  const isLoadingList = listStatus === 'loading'
+  const canLoadMoreList = listStatus === 'idle'
+  const isLoadingMoreList = listStatus === 'loadingMore'
 
   useEffect(() => {
+    window.clearTimeout(navigateTimer.current)
     setQuery(search.q ?? '')
   }, [search.q])
 
@@ -131,8 +167,8 @@ export function useSkillsBrowseModel({
         searchScore: entry.score,
       }))
     }
-    return paginatedResults as Array<SkillListEntry>
-  }, [hasQuery, paginatedResults, searchResults])
+    return listResults
+  }, [hasQuery, listResults, searchResults])
 
   const sorted = useMemo(() => {
     if (!hasQuery) {
@@ -189,9 +225,10 @@ export function useSkillsBrowseModel({
     if (hasQuery) {
       setSearchLimit((value) => value + pageSize)
     } else {
-      loadMorePaginated(pageSize)
+      setListStatus('loadingMore')
+      void fetchPage(listCursor, fetchGeneration.current)
     }
-  }, [canLoadMore, hasQuery, isLoadingMore, loadMorePaginated])
+  }, [canLoadMore, fetchPage, hasQuery, isLoadingMore, listCursor])
 
   useEffect(() => {
     if (!isLoadingMore) {
@@ -216,14 +253,36 @@ export function useSkillsBrowseModel({
     return () => observer.disconnect()
   }, [canLoadMore, loadMore])
 
+  useEffect(() => {
+    return () => window.clearTimeout(navigateTimer.current)
+  }, [])
+
   const onQueryChange = useCallback(
     (next: string) => {
-      const trimmed = next.trim()
       setQuery(next)
-      void navigate({
-        search: (prev) => ({ ...prev, q: trimmed ? next : undefined }),
-        replace: true,
-      })
+      window.clearTimeout(navigateTimer.current)
+      const trimmed = next.trim()
+      navigateTimer.current = window.setTimeout(() => {
+        void navigate({
+          search: (prev) => {
+            const hadQuery = typeof prev.q === 'string' && prev.q.trim().length > 0
+            const enteringSearch = Boolean(trimmed) && !hadQuery
+            const usesImplicitBrowseDefault = prev.sort === 'downloads' && prev.dir === undefined
+
+            return {
+              ...prev,
+              q: trimmed ? next : undefined,
+              ...(enteringSearch && usesImplicitBrowseDefault
+                ? {
+                    sort: undefined,
+                    dir: undefined,
+                  }
+                : null),
+            }
+          },
+          replace: true,
+        })
+      }, 220)
     },
     [navigate],
   )
@@ -305,7 +364,6 @@ export function useSkillsBrowseModel({
     onToggleHighlighted,
     onToggleNonSuspicious,
     onToggleView,
-    paginationStatus,
     query,
     sort,
     sorted,

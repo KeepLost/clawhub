@@ -1,5 +1,7 @@
 export type SiteMode = 'skills' | 'souls'
 
+import { getRuntimeEnv } from './runtimeEnv'
+
 const DEFAULT_CLAWHUB_SITE_URL = 'https://clawhub.ai'
 const DEFAULT_ONLYCRABS_SITE_URL = 'https://onlycrabs.ai'
 const DEFAULT_ONLYCRABS_HOST = 'onlycrabs.ai'
@@ -19,14 +21,14 @@ export function normalizeClawHubSiteOrigin(value?: string | null) {
 }
 
 export function getClawHubSiteUrl() {
-  return normalizeClawHubSiteOrigin(import.meta.env.VITE_SITE_URL) ?? DEFAULT_CLAWHUB_SITE_URL
+  return normalizeClawHubSiteOrigin(getRuntimeEnv('VITE_SITE_URL')) ?? DEFAULT_CLAWHUB_SITE_URL
 }
 
 export function getOnlyCrabsSiteUrl() {
-  const explicit = import.meta.env.VITE_SOULHUB_SITE_URL
+  const explicit = getRuntimeEnv('VITE_SOULHUB_SITE_URL')
   if (explicit) return explicit
 
-  const siteUrl = import.meta.env.VITE_SITE_URL
+  const siteUrl = getRuntimeEnv('VITE_SITE_URL')
   if (siteUrl) {
     try {
       const url = new URL(siteUrl)
@@ -46,7 +48,7 @@ export function getOnlyCrabsSiteUrl() {
 }
 
 export function getOnlyCrabsHost() {
-  return import.meta.env.VITE_SOULHUB_HOST ?? DEFAULT_ONLYCRABS_HOST
+  return getRuntimeEnv('VITE_SOULHUB_HOST') ?? DEFAULT_ONLYCRABS_HOST
 }
 
 export function detectSiteMode(host?: string | null): SiteMode {
@@ -71,13 +73,13 @@ export function getSiteMode(): SiteMode {
   if (typeof window !== 'undefined') {
     return detectSiteMode(window.location.hostname)
   }
-  const forced = import.meta.env.VITE_SITE_MODE
+  const forced = getRuntimeEnv('VITE_SITE_MODE')
   if (forced === 'souls' || forced === 'skills') return forced
 
-  const onlyCrabsSite = import.meta.env.VITE_SOULHUB_SITE_URL
+  const onlyCrabsSite = getRuntimeEnv('VITE_SOULHUB_SITE_URL')
   if (onlyCrabsSite) return detectSiteModeFromUrl(onlyCrabsSite)
 
-  const siteUrl = import.meta.env.VITE_SITE_URL ?? process.env.SITE_URL
+  const siteUrl = getRuntimeEnv('VITE_SITE_URL') ?? process.env.SITE_URL
   if (siteUrl) return detectSiteModeFromUrl(siteUrl)
 
   return 'skills'

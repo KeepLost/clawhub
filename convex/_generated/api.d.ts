@@ -8,6 +8,7 @@
  * @module
  */
 
+import type * as appMeta from "../appMeta.js";
 import type * as auth from "../auth.js";
 import type * as commentModeration from "../commentModeration.js";
 import type * as comments from "../comments.js";
@@ -15,6 +16,7 @@ import type * as crons from "../crons.js";
 import type * as devSeed from "../devSeed.js";
 import type * as devSeedExtra from "../devSeedExtra.js";
 import type * as downloads from "../downloads.js";
+import type * as functions from "../functions.js";
 import type * as githubBackups from "../githubBackups.js";
 import type * as githubBackupsNode from "../githubBackupsNode.js";
 import type * as githubIdentity from "../githubIdentity.js";
@@ -30,6 +32,7 @@ import type * as httpApiV1_shared from "../httpApiV1/shared.js";
 import type * as httpApiV1_skillsV1 from "../httpApiV1/skillsV1.js";
 import type * as httpApiV1_soulsV1 from "../httpApiV1/soulsV1.js";
 import type * as httpApiV1_starsV1 from "../httpApiV1/starsV1.js";
+import type * as httpApiV1_transfersV1 from "../httpApiV1/transfersV1.js";
 import type * as httpApiV1_usersV1 from "../httpApiV1/usersV1.js";
 import type * as httpApiV1_whoamiV1 from "../httpApiV1/whoamiV1.js";
 import type * as httpPreflight from "../httpPreflight.js";
@@ -53,8 +56,12 @@ import type * as lib_githubSoulBackup from "../lib/githubSoulBackup.js";
 import type * as lib_globalStats from "../lib/globalStats.js";
 import type * as lib_httpHeaders from "../lib/httpHeaders.js";
 import type * as lib_httpRateLimit from "../lib/httpRateLimit.js";
+import type * as lib_httpUtils from "../lib/httpUtils.js";
 import type * as lib_leaderboards from "../lib/leaderboards.js";
+import type * as lib_manualOverrides from "../lib/manualOverrides.js";
 import type * as lib_moderation from "../lib/moderation.js";
+import type * as lib_moderationEngine from "../lib/moderationEngine.js";
+import type * as lib_moderationReasonCodes from "../lib/moderationReasonCodes.js";
 import type * as lib_openaiResponse from "../lib/openaiResponse.js";
 import type * as lib_public from "../lib/public.js";
 import type * as lib_reporting from "../lib/reporting.js";
@@ -65,6 +72,7 @@ import type * as lib_skillBackfill from "../lib/skillBackfill.js";
 import type * as lib_skillPublish from "../lib/skillPublish.js";
 import type * as lib_skillQuality from "../lib/skillQuality.js";
 import type * as lib_skillSafety from "../lib/skillSafety.js";
+import type * as lib_skillSearchDigest from "../lib/skillSearchDigest.js";
 import type * as lib_skillStats from "../lib/skillStats.js";
 import type * as lib_skillSummary from "../lib/skillSummary.js";
 import type * as lib_skillZip from "../lib/skillZip.js";
@@ -81,6 +89,7 @@ import type * as search from "../search.js";
 import type * as seed from "../seed.js";
 import type * as seedSouls from "../seedSouls.js";
 import type * as skillStatEvents from "../skillStatEvents.js";
+import type * as skillTransfers from "../skillTransfers.js";
 import type * as skills from "../skills.js";
 import type * as soulComments from "../soulComments.js";
 import type * as soulDownloads from "../soulDownloads.js";
@@ -102,6 +111,7 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  appMeta: typeof appMeta;
   auth: typeof auth;
   commentModeration: typeof commentModeration;
   comments: typeof comments;
@@ -109,6 +119,7 @@ declare const fullApi: ApiFromModules<{
   devSeed: typeof devSeed;
   devSeedExtra: typeof devSeedExtra;
   downloads: typeof downloads;
+  functions: typeof functions;
   githubBackups: typeof githubBackups;
   githubBackupsNode: typeof githubBackupsNode;
   githubIdentity: typeof githubIdentity;
@@ -124,6 +135,7 @@ declare const fullApi: ApiFromModules<{
   "httpApiV1/skillsV1": typeof httpApiV1_skillsV1;
   "httpApiV1/soulsV1": typeof httpApiV1_soulsV1;
   "httpApiV1/starsV1": typeof httpApiV1_starsV1;
+  "httpApiV1/transfersV1": typeof httpApiV1_transfersV1;
   "httpApiV1/usersV1": typeof httpApiV1_usersV1;
   "httpApiV1/whoamiV1": typeof httpApiV1_whoamiV1;
   httpPreflight: typeof httpPreflight;
@@ -147,8 +159,12 @@ declare const fullApi: ApiFromModules<{
   "lib/globalStats": typeof lib_globalStats;
   "lib/httpHeaders": typeof lib_httpHeaders;
   "lib/httpRateLimit": typeof lib_httpRateLimit;
+  "lib/httpUtils": typeof lib_httpUtils;
   "lib/leaderboards": typeof lib_leaderboards;
+  "lib/manualOverrides": typeof lib_manualOverrides;
   "lib/moderation": typeof lib_moderation;
+  "lib/moderationEngine": typeof lib_moderationEngine;
+  "lib/moderationReasonCodes": typeof lib_moderationReasonCodes;
   "lib/openaiResponse": typeof lib_openaiResponse;
   "lib/public": typeof lib_public;
   "lib/reporting": typeof lib_reporting;
@@ -159,6 +175,7 @@ declare const fullApi: ApiFromModules<{
   "lib/skillPublish": typeof lib_skillPublish;
   "lib/skillQuality": typeof lib_skillQuality;
   "lib/skillSafety": typeof lib_skillSafety;
+  "lib/skillSearchDigest": typeof lib_skillSearchDigest;
   "lib/skillStats": typeof lib_skillStats;
   "lib/skillSummary": typeof lib_skillSummary;
   "lib/skillZip": typeof lib_skillZip;
@@ -175,6 +192,7 @@ declare const fullApi: ApiFromModules<{
   seed: typeof seed;
   seedSouls: typeof seedSouls;
   skillStatEvents: typeof skillStatEvents;
+  skillTransfers: typeof skillTransfers;
   skills: typeof skills;
   soulComments: typeof soulComments;
   soulDownloads: typeof soulDownloads;

@@ -2,7 +2,7 @@ import { ConvexError, v } from 'convex/values'
 import { internal } from './_generated/api'
 import type { Doc, Id } from './_generated/dataModel'
 import type { ActionCtx } from './_generated/server'
-import { action, internalAction, internalMutation, internalQuery } from './_generated/server'
+import { action, internalAction, internalMutation, internalQuery } from './functions'
 import { assertRole, requireUserFromAction } from './lib/access'
 import { buildSkillSummaryBackfillPatch, type ParsedSkillData } from './lib/skillBackfill'
 import {
@@ -12,6 +12,8 @@ import {
   type TrustTier,
 } from './lib/skillQuality'
 import { generateSkillSummary } from './lib/skillSummary'
+import { computeIsSuspicious } from './lib/skillSafety'
+import { extractDigestFields } from './lib/skillSearchDigest'
 import { hashSkillFiles } from './lib/skills'
 
 const DEFAULT_BATCH_SIZE = 50
@@ -20,6 +22,7 @@ const DEFAULT_MAX_BATCHES = 20
 const MAX_MAX_BATCHES = 200
 const DEFAULT_EMPTY_SKILL_MAX_README_BYTES = 8000
 const DEFAULT_EMPTY_SKILL_NOMINATION_THRESHOLD = 3
+const PLATFORM_SKILL_LICENSE = 'MIT-0' as const
 
 type BackfillStats = {
   skillsScanned: number
@@ -115,6 +118,7 @@ export const applySkillBackfillPatchInternal = internalMutation({
         frontmatter: v.record(v.string(), v.any()),
         metadata: v.optional(v.any()),
         clawdis: v.optional(v.any()),
+        license: v.optional(v.literal(PLATFORM_SKILL_LICENSE)),
       }),
     ),
   },
@@ -1522,6 +1526,340 @@ export const backfillDenormalizedBadgesInternal = internalMutation({
       await ctx.scheduler.runAfter(0, internal.maintenance.backfillDenormalizedBadgesInternal, {
         cursor: continueCursor,
         batchSize: args.batchSize,
+      })
+    }
+
+    return { patched, isDone, scanned: page.length }
+  },
+})
+
+/**
+ * Backfill `latestVersionSummary` on all skills. Cursor-based paginated mutation
+ * that self-schedules until done. Reads each skill's latestVersionId, extracts
+ * the summary fields, and patches the skill.
+ *
+ * Always reconciles against the current `latestVersionId` — if the summary is
+ * stale (e.g. from a tag retarget), it will be rewritten. To force a full
+ * re-backfill, simply re-run the function; every row is re-evaluated.
+ */
+export const backfillLatestVersionSummaryInternal = internalMutation({
+  args: {
+    cursor: v.optional(v.string()),
+    batchSize: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const batchSize = clampInt(args.batchSize ?? 50, 10, 200)
+    const { page, continueCursor, isDone } = await ctx.db
+      .query('skills')
+      .paginate({ cursor: args.cursor ?? null, numItems: batchSize })
+
+    let patched = 0
+    for (const skill of page) {
+      if (!skill.latestVersionId) continue
+      const version = await ctx.db.get(skill.latestVersionId)
+      if (!version) continue
+
+      const expected = {
+        version: version.version,
+        createdAt: version.createdAt,
+        changelog: version.changelog,
+        changelogSource: version.changelogSource,
+        clawdis: version.parsed?.clawdis,
+      }
+
+      // Skip if already in sync
+      const existing = skill.latestVersionSummary
+      if (
+        existing &&
+        existing.version === expected.version &&
+        existing.createdAt === expected.createdAt &&
+        existing.changelog === expected.changelog &&
+        existing.changelogSource === expected.changelogSource &&
+        JSON.stringify(existing.clawdis ?? null) === JSON.stringify(expected.clawdis ?? null)
+      ) {
+        continue
+      }
+
+      await ctx.db.patch(skill._id, { latestVersionSummary: expected })
+      patched++
+    }
+
+    if (!isDone) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.maintenance.backfillLatestVersionSummaryInternal,
+        {
+          cursor: continueCursor,
+          batchSize: args.batchSize,
+        },
+      )
+    }
+
+    return { patched, isDone, scanned: page.length }
+  },
+})
+
+/**
+ * Backfill `isSuspicious` on all skills. Cursor-based paginated mutation
+ * that self-schedules until done.
+ */
+export const backfillIsSuspiciousInternal = internalMutation({
+  args: {
+    cursor: v.optional(v.string()),
+    batchSize: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const batchSize = clampInt(args.batchSize ?? 100, 10, 200)
+    const { page, continueCursor, isDone } = await ctx.db
+      .query('skills')
+      .paginate({ cursor: args.cursor ?? null, numItems: batchSize })
+
+    let patched = 0
+    for (const skill of page) {
+      const expected = computeIsSuspicious(skill)
+      if (skill.isSuspicious !== expected) {
+        await ctx.db.patch(skill._id, { isSuspicious: expected })
+        patched++
+      }
+    }
+
+    if (!isDone) {
+      await ctx.scheduler.runAfter(0, internal.maintenance.backfillIsSuspiciousInternal, {
+        cursor: continueCursor,
+        batchSize: args.batchSize,
+      })
+    }
+
+    return { patched, isDone, scanned: page.length }
+  },
+})
+
+// Backfill skillSearchDigest from existing skills.
+// Run once after deploying the schema change:
+//   npx convex run maintenance:backfillSkillSearchDigestInternal --prod
+export const backfillSkillSearchDigestInternal = internalMutation({
+  args: {
+    cursor: v.optional(v.string()),
+    batchSize: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const batchSize = clampInt(args.batchSize ?? 200, 10, 500)
+    const { page, continueCursor, isDone } = await ctx.db
+      .query('skills')
+      .paginate({ cursor: args.cursor ?? null, numItems: batchSize })
+
+    let inserted = 0
+    for (const skill of page) {
+      const existing = await ctx.db
+        .query('skillSearchDigest')
+        .withIndex('by_skill', (q) => q.eq('skillId', skill._id))
+        .unique()
+      if (!existing) {
+        await ctx.db.insert('skillSearchDigest', extractDigestFields(skill))
+        inserted++
+      }
+    }
+
+    if (!isDone) {
+      await ctx.scheduler.runAfter(0, internal.maintenance.backfillSkillSearchDigestInternal, {
+        cursor: continueCursor,
+        batchSize: args.batchSize,
+      })
+    }
+
+    return { inserted, isDone, scanned: page.length }
+  },
+})
+
+const DIGEST_OWNER_BACKFILL_KEY = 'digest-owner-backfill'
+
+// Start/resume backfill:
+//   npx convex run maintenance:backfillDigestOwnerFields '{"batchSize":50,"delayMs":5000}' --prod
+// Stop:
+//   npx convex run maintenance:stopBackfillDigestOwnerFields --prod
+// Check status:
+//   npx convex run maintenance:backfillDigestOwnerFieldsStatus --prod
+export const backfillDigestOwnerFields = internalMutation({
+  args: {
+    batchSize: v.optional(v.number()),
+    delayMs: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    // Clear any previous stop flag and store config
+    const existing = await ctx.db
+      .query('skillStatBackfillState')
+      .withIndex('by_key', (q) => q.eq('key', DIGEST_OWNER_BACKFILL_KEY))
+      .unique()
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        cursor: undefined,
+        doneAt: undefined,
+        updatedAt: Date.now(),
+      })
+    } else {
+      await ctx.db.insert('skillStatBackfillState', {
+        key: DIGEST_OWNER_BACKFILL_KEY,
+        updatedAt: Date.now(),
+      })
+    }
+    // Kick off first batch
+    await ctx.scheduler.runAfter(0, internal.maintenance.backfillDigestOwnerFieldsInternal, {
+      batchSize: args.batchSize,
+      delayMs: args.delayMs,
+    })
+    return { started: true }
+  },
+})
+
+export const stopBackfillDigestOwnerFields = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const state = await ctx.db
+      .query('skillStatBackfillState')
+      .withIndex('by_key', (q) => q.eq('key', DIGEST_OWNER_BACKFILL_KEY))
+      .unique()
+    if (state) {
+      await ctx.db.patch(state._id, { doneAt: Date.now(), updatedAt: Date.now() })
+    }
+    return { stopped: true }
+  },
+})
+
+export const backfillDigestOwnerFieldsStatus = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const state = await ctx.db
+      .query('skillStatBackfillState')
+      .withIndex('by_key', (q) => q.eq('key', DIGEST_OWNER_BACKFILL_KEY))
+      .unique()
+    if (!state) return { status: 'never_started' }
+    if (state.doneAt) return { status: 'stopped', cursor: state.cursor, stoppedAt: state.doneAt }
+    return { status: 'running', cursor: state.cursor }
+  },
+})
+
+export const backfillDigestOwnerFieldsInternal = internalMutation({
+  args: {
+    cursor: v.optional(v.string()),
+    batchSize: v.optional(v.number()),
+    delayMs: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    // Check stop flag
+    const state = await ctx.db
+      .query('skillStatBackfillState')
+      .withIndex('by_key', (q) => q.eq('key', DIGEST_OWNER_BACKFILL_KEY))
+      .unique()
+    if (state?.doneAt) {
+      return { patched: 0, isDone: false, scanned: 0, stopped: true }
+    }
+
+    const batchSize = clampInt(args.batchSize ?? 200, 10, 500)
+    const delayMs = clampInt(args.delayMs ?? 0, 0, 60_000)
+    const { page, continueCursor, isDone } = await ctx.db
+      .query('skillSearchDigest')
+      .paginate({ cursor: args.cursor ?? null, numItems: batchSize })
+
+    let patched = 0
+    for (const digest of page) {
+      if (digest.ownerHandle !== undefined) continue
+      const owner = await ctx.db.get(digest.ownerUserId)
+      const isOwnerVisible = owner && !owner.deletedAt && !owner.deactivatedAt
+      await ctx.db.patch(digest._id, {
+        ownerHandle: isOwnerVisible ? (owner.handle ?? '') : '',
+        ownerName: isOwnerVisible ? owner.name : undefined,
+        ownerDisplayName: isOwnerVisible ? owner.displayName : undefined,
+        ownerImage: isOwnerVisible ? owner.image : undefined,
+      })
+      patched++
+    }
+
+    // Save cursor progress
+    if (state) {
+      await ctx.db.patch(state._id, {
+        cursor: continueCursor,
+        doneAt: isDone ? Date.now() : undefined,
+        updatedAt: Date.now(),
+      })
+    }
+
+    if (!isDone) {
+      await ctx.scheduler.runAfter(delayMs, internal.maintenance.backfillDigestOwnerFieldsInternal, {
+        cursor: continueCursor,
+        batchSize: args.batchSize,
+        delayMs: args.delayMs,
+      })
+    }
+
+    return { patched, isDone, scanned: page.length, stopped: false }
+  },
+})
+
+// Backfill latestVersionSummary from skills into existing skillSearchDigest rows.
+// Run:
+//   npx convex run maintenance:backfillDigestVersionSummary '{"batchSize":100}' --prod
+export const backfillDigestVersionSummary = internalMutation({
+  args: {
+    cursor: v.optional(v.string()),
+    batchSize: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const batchSize = clampInt(args.batchSize ?? 200, 10, 500)
+    const { page, continueCursor, isDone } = await ctx.db
+      .query('skillSearchDigest')
+      .paginate({ cursor: args.cursor ?? null, numItems: batchSize })
+
+    let patched = 0
+    for (const digest of page) {
+      if (digest.latestVersionSummary !== undefined) continue
+      const skill = await ctx.db.get(digest.skillId)
+      if (!skill?.latestVersionSummary) continue
+      await ctx.db.patch(digest._id, {
+        latestVersionSummary: skill.latestVersionSummary,
+      })
+      patched++
+    }
+
+    if (!isDone) {
+      await ctx.scheduler.runAfter(0, internal.maintenance.backfillDigestVersionSummary, {
+        cursor: continueCursor,
+        batchSize: args.batchSize,
+      })
+    }
+
+    return { patched, isDone, scanned: page.length }
+  },
+})
+
+// Backfill isSuspicious on skillSearchDigest rows where it's undefined.
+// Computes from digest's own moderationFlags/moderationReason — no skills table read.
+// Run: npx convex run maintenance:backfillDigestIsSuspicious --prod
+export const backfillDigestIsSuspicious = internalMutation({
+  args: {
+    cursor: v.optional(v.string()),
+    batchSize: v.optional(v.number()),
+    delayMs: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const batchSize = clampInt(args.batchSize ?? 100, 10, 200)
+    const delayMs = args.delayMs ?? 500
+    const { page, continueCursor, isDone } = await ctx.db
+      .query('skillSearchDigest')
+      .paginate({ cursor: args.cursor ?? null, numItems: batchSize })
+
+    let patched = 0
+    for (const digest of page) {
+      if (digest.isSuspicious !== undefined) continue
+      const isSuspicious = computeIsSuspicious(digest)
+      await ctx.db.patch(digest._id, { isSuspicious })
+      patched++
+    }
+
+    if (!isDone) {
+      await ctx.scheduler.runAfter(delayMs, internal.maintenance.backfillDigestIsSuspicious, {
+        cursor: continueCursor,
+        batchSize: args.batchSize,
+        delayMs: args.delayMs,
       })
     }
 

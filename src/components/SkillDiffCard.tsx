@@ -36,11 +36,19 @@ type SizeWarning = {
 }
 
 const EMPTY_DIFF_TEXT = ''
+const MOBILE_DIFF_BREAKPOINT = 860
+
+function getDefaultViewMode() {
+  if (typeof window === 'undefined') return 'split'
+  return window.matchMedia(`(max-width: ${MOBILE_DIFF_BREAKPOINT}px)`).matches
+    ? 'inline'
+    : 'split'
+}
 
 export function SkillDiffCard({ skill, versions, variant = 'card' }: SkillDiffCardProps) {
   const getFileText = useAction(api.skills.getFileText)
   const monaco = useMonaco()
-  const [viewMode, setViewMode] = useState<'split' | 'inline'>('split')
+  const [viewMode, setViewMode] = useState<'split' | 'inline'>(getDefaultViewMode)
   const [leftVersionId, setLeftVersionId] = useState<Id<'skillVersions'> | null>(null)
   const [rightVersionId, setRightVersionId] = useState<Id<'skillVersions'> | null>(null)
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
@@ -50,6 +58,7 @@ export function SkillDiffCard({ skill, versions, variant = 'card' }: SkillDiffCa
   const [error, setError] = useState<string | null>(null)
   const [sizeWarning, setSizeWarning] = useState<SizeWarning | null>(null)
   const cacheRef = useRef(new Map<string, string>())
+  const userSelectedViewModeRef = useRef(false)
 
   const versionEntries = useMemo(
     () => versions.map((entry) => ({ id: entry._id, version: entry.version })),
@@ -235,11 +244,35 @@ export function SkillDiffCard({ skill, versions, variant = 'card' }: SkillDiffCa
     return () => observer.disconnect()
   }, [monaco])
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const mediaQuery = window.matchMedia(`(max-width: ${MOBILE_DIFF_BREAKPOINT}px)`)
+    const syncViewMode = () => {
+      if (!userSelectedViewModeRef.current) {
+        setViewMode(mediaQuery.matches ? 'inline' : 'split')
+      }
+    }
+
+    if (typeof mediaQuery.addEventListener === 'function') {
+      mediaQuery.addEventListener('change', syncViewMode)
+      return () => mediaQuery.removeEventListener('change', syncViewMode)
+    }
+
+    mediaQuery.addListener(syncViewMode)
+    return () => mediaQuery.removeListener(syncViewMode)
+  }, [])
+
+  function updateViewMode(nextViewMode: 'split' | 'inline') {
+    userSelectedViewModeRef.current = true
+    setViewMode(nextViewMode)
+  }
+
   const leftLabel = leftVersion ? `v${leftVersion.version}` : '—'
   const rightLabel = rightVersion ? `v${rightVersion.version}` : '—'
   const diffUnavailable = versions.length < 2
   const selectionReady = Boolean(leftVersionId && rightVersionId)
   const fileSelected = Boolean(selectedItem)
+  const diffOptions = useMemo(() => buildDiffOptions(viewMode), [viewMode])
 
   const containerClass = variant === 'card' ? 'card diff-card' : 'diff-card diff-card-embedded'
 
@@ -259,14 +292,14 @@ export function SkillDiffCard({ skill, versions, variant = 'card' }: SkillDiffCa
           <button
             className={`diff-toggle${viewMode === 'split' ? ' is-active' : ''}`}
             type="button"
-            onClick={() => setViewMode('split')}
+            onClick={() => updateViewMode('split')}
           >
             Side-by-side
           </button>
           <button
             className={`diff-toggle${viewMode === 'inline' ? ' is-active' : ''}`}
             type="button"
-            onClick={() => setViewMode('inline')}
+            onClick={() => updateViewMode('inline')}
           >
             Inline
           </button>
@@ -357,12 +390,13 @@ export function SkillDiffCard({ skill, versions, variant = 'card' }: SkillDiffCa
           ) : (
             <ClientOnly fallback={<div className="diff-empty">Preparing diff…</div>}>
               <DiffEditor
-                className="diff-monaco"
+                key={`diff-${viewMode}`}
+                className={`diff-monaco diff-monaco-${viewMode}`}
                 original={leftText}
                 modified={rightText}
                 theme={getMonacoThemeName()}
                 loading={<div className="diff-empty">Loading diff…</div>}
-                options={buildDiffOptions(viewMode)}
+                options={diffOptions}
               />
               {isLoading ? <div className="diff-loading">Loading…</div> : null}
             </ClientOnly>
@@ -404,11 +438,12 @@ function buildDiffOptions(viewMode: 'split' | 'inline'): DiffEditorProps['option
   return {
     readOnly: true,
     renderSideBySide: viewMode === 'split',
-    renderSideBySideInlineBreakpoint: 860,
+    useInlineViewWhenSpaceIsLimited: false,
     wordWrap: 'on',
     minimap: { enabled: false },
     scrollBeyondLastLine: false,
     overviewRulerBorder: false,
+    renderOverviewRuler: true,
     renderIndicators: true,
     diffAlgorithm: 'advanced',
     fontFamily: 'var(--font-mono)',
@@ -425,15 +460,24 @@ function applyMonacoTheme(monaco: NonNullable<ReturnType<typeof useMonaco>>) {
   const line = styles.getPropertyValue('--line').trim() || 'rgba(29, 26, 23, 0.12)'
   const accent = styles.getPropertyValue('--accent').trim() || '#e65c46'
   const seafoam = styles.getPropertyValue('--seafoam').trim() || '#2bc6a4'
-  const diffAdded = styles.getPropertyValue('--diff-added').trim() || seafoam
-  const diffRemoved = styles.getPropertyValue('--diff-removed').trim() || accent
+  const diffAdded = styles.getPropertyValue('--diff-added').trim() || '#9bb955'
+  const diffAddedStrong =
+    styles.getPropertyValue('--diff-added-strong').trim() || seafoam
+  const diffRemoved = styles.getPropertyValue('--diff-removed').trim() || '#e47866'
+  const diffRemovedStrong =
+    styles.getPropertyValue('--diff-removed-strong').trim() || accent
+  const diffDiagonal = styles.getPropertyValue('--diff-diagonal').trim() || '#22222233'
   const background = surface
   const gutter = surfaceMuted
   const isDark = document.documentElement.dataset.theme === 'dark'
   const base = isDark ? 'vs-dark' : 'vs'
 
-  const diffInserted = toRgba(diffAdded, isDark ? 0.12 : 0.16)
-  const diffRemovedBg = toRgba(diffRemoved, isDark ? 0.12 : 0.16)
+  const diffInserted = withAlpha(diffAdded, isDark ? 0.22 : 0.2)
+  const diffInsertedText = withAlpha(diffAddedStrong, isDark ? 0.24 : 0.25)
+  const diffInsertedBorder = withAlpha(diffAddedStrong, isDark ? 0.45 : 0.5)
+  const diffRemovedBg = withAlpha(diffRemoved, isDark ? 0.22 : 0.2)
+  const diffRemovedText = withAlpha(diffRemovedStrong, isDark ? 0.2 : 0.22)
+  const diffRemovedBorder = withAlpha(diffRemovedStrong, isDark ? 0.45 : 0.5)
 
   monaco.editor.defineTheme(`clawhub-${isDark ? 'dark' : 'light'}`, {
     base,
@@ -453,10 +497,17 @@ function applyMonacoTheme(monaco: NonNullable<ReturnType<typeof useMonaco>>) {
       'editorWidget.background': surface,
       'editorWidget.border': line,
       'editorWidget.foreground': ink,
-      'diffEditor.insertedTextBackground': diffInserted,
-      'diffEditor.removedTextBackground': diffRemovedBg,
+      'diffEditor.insertedTextBackground': diffInsertedText,
+      'diffEditor.removedTextBackground': diffRemovedText,
       'diffEditor.insertedLineBackground': diffInserted,
       'diffEditor.removedLineBackground': diffRemovedBg,
+      'diffEditor.insertedTextBorder': diffInsertedBorder,
+      'diffEditor.removedTextBorder': diffRemovedBorder,
+      'diffEditorGutter.insertedLineBackground': diffInserted,
+      'diffEditorGutter.removedLineBackground': diffRemovedBg,
+      'diffEditorOverview.insertedForeground': diffInserted,
+      'diffEditorOverview.removedForeground': diffRemovedBg,
+      'diffEditor.diagonalFill': diffDiagonal,
       'diffEditor.border': line,
       'scrollbarSlider.background': toRgba(inkSoft, 0.15),
       'scrollbarSlider.hoverBackground': toRgba(inkSoft, 0.28),
@@ -482,4 +533,15 @@ function toRgba(color: string, alpha: number) {
   const g = Number.parseInt(hex.slice(2, 4), 16)
   const b = Number.parseInt(hex.slice(4, 6), 16)
   return `rgba(${r}, ${g}, ${b}, ${alpha})`
+}
+
+function withAlpha(color: string, alpha: number) {
+  const hex = normalizeHex(color)
+  if (!hex.startsWith('#')) return color
+  const value = hex.slice(1)
+  if (value.length !== 6) return color
+  const channel = Math.round(alpha * 255)
+    .toString(16)
+    .padStart(2, '0')
+  return `#${value}${channel}`
 }

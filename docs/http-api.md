@@ -74,6 +74,8 @@ Query params:
 - `q` (required): query string
 - `limit` (optional): integer
 - `highlightedOnly` (optional): `true` to filter to highlighted skills
+- `nonSuspiciousOnly` (optional): `true` to hide suspicious (`flagged.suspicious`) skills
+- `nonSuspicious` (optional): legacy alias for `nonSuspiciousOnly`
 
 Response:
 
@@ -90,12 +92,16 @@ Notes:
 Query params:
 
 - `limit` (optional): integer (1–200)
-- `cursor` (optional): pagination cursor (only for `sort=updated`)
+- `cursor` (optional): pagination cursor for any non-`trending` sort
 - `sort` (optional): `updated` (default), `downloads`, `stars` (alias: `rating`), `installsCurrent` (alias: `installs`), `installsAllTime`, `trending`
+- `nonSuspiciousOnly` (optional): `true` to hide suspicious (`flagged.suspicious`) skills
+- `nonSuspicious` (optional): legacy alias for `nonSuspiciousOnly`
 
 Notes:
 
 - `trending` ranks by installs in the last 7 days (telemetry-based).
+- When `nonSuspiciousOnly=true`, cursor-based sorts may return fewer than `limit` items on a page because suspicious skills are filtered after page retrieval.
+- Use `nextCursor` to continue pagination when present. A short page does not by itself mean end-of-results.
 
 Response:
 
@@ -108,14 +114,32 @@ Response:
 Response:
 
 ```json
-{ "skill": { "slug": "gifgrep", "displayName": "GifGrep", "summary": "…", "tags": { "latest": "1.2.3" }, "stats": {}, "createdAt": 0, "updatedAt": 0 }, "latestVersion": { "version": "1.2.3", "createdAt": 0, "changelog": "…" }, "metadata": { "os": ["macos"], "systems": ["aarch64-darwin"] }, "owner": { "handle": "steipete", "displayName": "Peter", "image": null } }
+{ "skill": { "slug": "gifgrep", "displayName": "GifGrep", "summary": "…", "tags": { "latest": "1.2.3" }, "stats": {}, "createdAt": 0, "updatedAt": 0 }, "latestVersion": { "version": "1.2.3", "createdAt": 0, "changelog": "…" }, "metadata": { "os": ["macos"], "systems": ["aarch64-darwin"] }, "owner": { "handle": "steipete", "displayName": "Peter", "image": null }, "moderation": { "isSuspicious": false, "isMalwareBlocked": false, "verdict": "clean", "reasonCodes": [], "summary": null, "engineVersion": "v2.0.0", "updatedAt": 0 } }
 ```
 
 Notes:
 
+- Old slugs created by owner rename/merge flows resolve to the canonical skill.
 - `metadata.os`: OS restrictions declared in skill frontmatter (e.g. `["macos"]`, `["linux"]`). `null` if not declared.
 - `metadata.systems`: Nix system targets (e.g. `["aarch64-darwin", "x86_64-linux"]`). `null` if not declared.
 - `metadata` is `null` if the skill has no platform metadata.
+- `moderation` is included only when the skill is flagged or the owner is viewing it.
+
+### `GET /api/v1/skills/{slug}/moderation`
+
+Returns structured moderation state.
+
+Response:
+
+```json
+{ "moderation": { "isSuspicious": true, "isMalwareBlocked": false, "verdict": "suspicious", "reasonCodes": ["suspicious.dynamic_code_execution"], "summary": "Detected: suspicious.dynamic_code_execution", "engineVersion": "v2.0.0", "updatedAt": 0, "legacyReason": null, "evidence": [{ "code": "suspicious.dynamic_code_execution", "severity": "critical", "file": "index.ts", "line": 3, "message": "Dynamic code execution detected.", "evidence": "" }] } }
+```
+
+Notes:
+
+- Owners and staff can access moderation details for hidden skills.
+- Public callers only get `200` for already-flagged visible skills.
+- Evidence is redacted for public callers and only includes raw snippets for owners/staff.
 
 ### `GET /api/v1/skills/{slug}/versions`
 
@@ -127,6 +151,26 @@ Query params:
 ### `GET /api/v1/skills/{slug}/versions/{version}`
 
 Returns version metadata + files list.
+
+- `version.security` includes normalized scan verification status and scanner details
+  (VirusTotal + LLM), when available.
+
+### `GET /api/v1/skills/{slug}/scan`
+
+Returns security scan verification details for a skill version.
+
+Query params:
+
+- `version` (optional): specific version string.
+- `tag` (optional): resolve a tagged version (for example `latest`).
+
+Notes:
+
+- If neither `version` nor `tag` is provided, uses the latest version.
+- Includes normalized verification status plus scanner-specific details.
+- `security.hasScanResult` is `true` only when a scanner produced a definitive verdict (`clean`, `suspicious`, or `malicious`).
+- `moderation` is a current skill-level moderation snapshot derived from the latest version.
+- When querying a historical version, check `moderation.matchesRequestedVersion` and `moderation.sourceVersion` before treating `moderation` and `security` as the same version context.
 
 ### `GET /api/v1/skills/{slug}/file`
 
@@ -204,6 +248,34 @@ Status codes:
 - `403`: forbidden
 - `404`: skill/user not found
 - `500`: internal server error
+
+### Owner slug management endpoints
+
+- `POST /api/v1/skills/{slug}/rename`
+  - Body: `{ "newSlug": "new-canonical-slug" }`
+  - Response: `{ "ok": true, "slug": "new-canonical-slug", "previousSlug": "old-slug" }`
+- `POST /api/v1/skills/{slug}/merge`
+  - Body: `{ "targetSlug": "canonical-target-slug" }`
+  - Response: `{ "ok": true, "sourceSlug": "old-slug", "targetSlug": "canonical-target-slug" }`
+
+Notes:
+
+- Both endpoints require API token auth and only work for the skill owner.
+- `rename` preserves the previous slug as a redirect alias.
+- `merge` hides the source listing and redirects the source slug to the target listing.
+
+### Transfer ownership endpoints
+
+- `POST /api/v1/skills/{slug}/transfer`
+  - Body: `{ "toUserHandle": "target_handle", "message": "optional" }`
+  - Response: `{ "ok": true, "transferId": "skillOwnershipTransfers:...", "toUserHandle": "target_handle", "expiresAt": 1730000000000 }`
+- `POST /api/v1/skills/{slug}/transfer/accept`
+- `POST /api/v1/skills/{slug}/transfer/reject`
+- `POST /api/v1/skills/{slug}/transfer/cancel`
+  - Response (accept/reject/cancel): `{ "ok": true, "skillSlug": "demo-skill?" }`
+- `GET /api/v1/transfers/incoming`
+- `GET /api/v1/transfers/outgoing`
+  - Response shape: `{ "transfers": [{ "_id": "...", "skill": { "slug": "demo", "displayName": "Demo" }, "fromUser"|"toUser": { "handle": "..." }, "message": "...", "requestedAt": 0, "expiresAt": 0 }] }`
 
 ### `POST /api/v1/users/ban`
 

@@ -39,6 +39,22 @@ read_when:
 - Skills directory supports an optional "Hide suspicious" filter to exclude
   active-but-flagged (`flagged.suspicious`) entries from browse/search results.
 
+## Skill moderation pipeline
+
+- New skill publishes now persist a deterministic static scan result on the version.
+- Skill moderation state stores a structured snapshot:
+  - `moderationVerdict`: `clean | suspicious | malicious`
+  - `moderationReasonCodes[]`: canonical machine-readable reasons
+  - `moderationEvidence[]`: capped file/line evidence for static findings
+  - `moderationSummary`, engine version, evaluation timestamp, source version id
+- Structured moderation is rebuilt from current signals instead of appending stale scanner codes.
+- Legacy moderation flags remain in sync for existing public visibility and suspicious-skill filtering.
+- Static malware detection now hard-blocks install prompts that tell users to paste obfuscated shell payloads
+  (for example base64-decoded `curl|bash` terminal commands). When triggered:
+  - the uploaded skill is hidden immediately
+  - the uploader is placed into manual moderation
+  - all owned skills are hidden until staff review
+
 ## AI comment scam backfill
 
 - Moderators/admins can run a comment backfill scanner to classify scam comments with OpenAI.

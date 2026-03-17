@@ -225,6 +225,63 @@ describe('httpApiV1 handlers', () => {
       query: 'test',
       limit: 5,
       highlightedOnly: true,
+      nonSuspiciousOnly: undefined,
+    })
+  })
+
+  it('search forwards nonSuspiciousOnly', async () => {
+    const runAction = vi.fn().mockResolvedValue([])
+    const runMutation = vi.fn().mockResolvedValue(okRate())
+    const response = await __handlers.searchSkillsV1Handler(
+      makeCtx({ runAction, runMutation }),
+      new Request('https://example.com/api/v1/search?q=test&nonSuspiciousOnly=1'),
+    )
+    if (response.status !== 200) {
+      throw new Error(await response.text())
+    }
+    expect(runAction).toHaveBeenCalledWith(expect.anything(), {
+      query: 'test',
+      limit: undefined,
+      highlightedOnly: undefined,
+      nonSuspiciousOnly: true,
+    })
+  })
+
+  it('search forwards legacy nonSuspicious alias', async () => {
+    const runAction = vi.fn().mockResolvedValue([])
+    const runMutation = vi.fn().mockResolvedValue(okRate())
+    const response = await __handlers.searchSkillsV1Handler(
+      makeCtx({ runAction, runMutation }),
+      new Request('https://example.com/api/v1/search?q=test&nonSuspicious=1'),
+    )
+    if (response.status !== 200) {
+      throw new Error(await response.text())
+    }
+    expect(runAction).toHaveBeenCalledWith(expect.anything(), {
+      query: 'test',
+      limit: undefined,
+      highlightedOnly: undefined,
+      nonSuspiciousOnly: true,
+    })
+  })
+
+  it('search prefers canonical nonSuspiciousOnly over legacy alias', async () => {
+    const runAction = vi.fn().mockResolvedValue([])
+    const runMutation = vi.fn().mockResolvedValue(okRate())
+    const response = await __handlers.searchSkillsV1Handler(
+      makeCtx({ runAction, runMutation }),
+      new Request(
+        'https://example.com/api/v1/search?q=test&nonSuspiciousOnly=false&nonSuspicious=1',
+      ),
+    )
+    if (response.status !== 200) {
+      throw new Error(await response.text())
+    }
+    expect(runAction).toHaveBeenCalledWith(expect.anything(), {
+      query: 'test',
+      limit: undefined,
+      highlightedOnly: undefined,
+      nonSuspiciousOnly: undefined,
     })
   })
 
@@ -529,6 +586,56 @@ describe('httpApiV1 handlers', () => {
     expect(json.soul.tags.latest).toBe('1.0.0')
   })
 
+  it('souls file download loads storage from internal version docs', async () => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ('slug' in args) {
+        return {
+          _id: 'souls:1',
+          slug: 'demo-soul',
+          displayName: 'Demo Soul',
+          tags: { latest: 'soulVersions:1' },
+          latestVersionId: 'soulVersions:1',
+          softDeletedAt: undefined,
+        }
+      }
+      if ('versionId' in args) {
+        return {
+          _id: 'soulVersions:1',
+          version: '1.0.0',
+          createdAt: 3,
+          changelog: 'c',
+          files: [
+            {
+              path: 'SOUL.md',
+              size: 5,
+              storageId: '_storage:1',
+              sha256: 'abc123',
+              contentType: 'text/markdown',
+            },
+          ],
+          softDeletedAt: undefined,
+        }
+      }
+      return null
+    })
+    const runMutation = vi.fn().mockResolvedValue(okRate())
+    const storageGet = vi.fn().mockResolvedValue({
+      text: vi.fn().mockResolvedValue('hello'),
+    })
+    const response = await __handlers.soulsGetRouterV1Handler(
+      makeCtx({
+        runQuery,
+        runMutation,
+        storage: { get: storageGet },
+      }),
+      new Request('https://example.com/api/v1/souls/demo-soul/file?path=SOUL.md'),
+    )
+
+    expect(response.status).toBe(200)
+    expect(await response.text()).toBe('hello')
+    expect(storageGet).toHaveBeenCalledWith('_storage:1')
+  })
+
   it('lists skills supports sort aliases', async () => {
     const checks: Array<[string, string]> = [
       ['rating', 'stars'],
@@ -552,6 +659,56 @@ describe('httpApiV1 handlers', () => {
       )
       expect(response.status).toBe(200)
     }
+  })
+
+  it('lists skills forwards nonSuspiciousOnly', async () => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ('sort' in args || 'cursor' in args || 'limit' in args) {
+        expect(args.nonSuspiciousOnly).toBe(true)
+        return { items: [], nextCursor: null }
+      }
+      return null
+    })
+    const runMutation = vi.fn().mockResolvedValue(okRate())
+    const response = await __handlers.listSkillsV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request('https://example.com/api/v1/skills?nonSuspiciousOnly=true'),
+    )
+    expect(response.status).toBe(200)
+  })
+
+  it('lists skills forwards legacy nonSuspicious alias', async () => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ('sort' in args || 'cursor' in args || 'limit' in args) {
+        expect(args.nonSuspiciousOnly).toBe(true)
+        return { items: [], nextCursor: null }
+      }
+      return null
+    })
+    const runMutation = vi.fn().mockResolvedValue(okRate())
+    const response = await __handlers.listSkillsV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request('https://example.com/api/v1/skills?nonSuspicious=1'),
+    )
+    expect(response.status).toBe(200)
+  })
+
+  it('lists skills prefers canonical nonSuspiciousOnly over legacy alias', async () => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ('sort' in args || 'cursor' in args || 'limit' in args) {
+        expect(args.nonSuspiciousOnly).toBeUndefined()
+        return { items: [], nextCursor: null }
+      }
+      return null
+    })
+    const runMutation = vi.fn().mockResolvedValue(okRate())
+    const response = await __handlers.listSkillsV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request(
+        'https://example.com/api/v1/skills?nonSuspiciousOnly=false&nonSuspicious=1',
+      ),
+    )
+    expect(response.status).toBe(200)
   })
 
   it('get skill returns 404 when missing', async () => {
@@ -631,6 +788,15 @@ describe('httpApiV1 handlers', () => {
             files: [],
           },
           owner: { handle: 'p', displayName: 'Peter', image: null },
+          moderationInfo: {
+            isSuspicious: true,
+            isMalwareBlocked: false,
+            verdict: 'suspicious',
+            reasonCodes: ['suspicious.dynamic_code_execution'],
+            summary: 'Detected: suspicious.dynamic_code_execution',
+            engineVersion: 'v2.0.0',
+            updatedAt: 4,
+          },
         }
       }
       // Batch query for tag resolution
@@ -648,12 +814,200 @@ describe('httpApiV1 handlers', () => {
     const json = await response.json()
     expect(json.skill.slug).toBe('demo')
     expect(json.latestVersion.version).toBe('1.0.0')
+    expect(json.moderation).toEqual({
+      isSuspicious: true,
+      isMalwareBlocked: false,
+      verdict: 'suspicious',
+      reasonCodes: ['suspicious.dynamic_code_execution'],
+      summary: 'Detected: suspicious.dynamic_code_execution',
+      engineVersion: 'v2.0.0',
+      updatedAt: 4,
+    })
+  })
+
+  it('get moderation returns redacted evidence for public flagged skill', async () => {
+    let slugCalls = 0
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ('slug' in args) {
+        slugCalls += 1
+        if (slugCalls === 1) {
+          return {
+            _id: 'skills:1',
+            slug: 'demo',
+            ownerUserId: 'users:owner',
+            moderationFlags: ['flagged.suspicious'],
+            moderationVerdict: 'suspicious',
+            moderationReasonCodes: ['suspicious.dynamic_code_execution'],
+            moderationSummary: 'Detected: suspicious.dynamic_code_execution',
+            moderationEngineVersion: 'v2.0.0',
+            moderationEvaluatedAt: 5,
+            moderationReason: 'scanner.llm.suspicious',
+            moderationEvidence: [
+              {
+                code: 'suspicious.dynamic_code_execution',
+                severity: 'critical',
+                file: 'index.ts',
+                line: 3,
+                message: 'Dynamic code execution detected.',
+                evidence: 'eval(payload)',
+              },
+            ],
+          }
+        }
+
+        return {
+          skill: {
+            _id: 'skills:1',
+            slug: 'demo',
+            displayName: 'Demo',
+            summary: 's',
+            ownerUserId: 'users:owner',
+            tags: { latest: 'versions:1' },
+            stats: { downloads: 0, stars: 0, versions: 1, comments: 0 },
+            createdAt: 1,
+            updatedAt: 2,
+          },
+          latestVersion: null,
+          owner: null,
+          moderationInfo: {
+            isSuspicious: true,
+            isMalwareBlocked: false,
+            verdict: 'suspicious',
+            reasonCodes: ['suspicious.dynamic_code_execution'],
+            summary: 'Detected: suspicious.dynamic_code_execution',
+            engineVersion: 'v2.0.0',
+            updatedAt: 5,
+          },
+        }
+      }
+      return null
+    })
+    const runMutation = vi.fn().mockResolvedValue(okRate())
+
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request('https://example.com/api/v1/skills/demo/moderation'),
+    )
+
+    expect(response.status).toBe(200)
+    const json = await response.json()
+    expect(json.moderation.legacyReason).toBeNull()
+    expect(json.moderation.evidence[0].evidence).toBe('')
+  })
+
+  it('get moderation returns full evidence for owner hidden skill', async () => {
+    vi.mocked(getOptionalApiTokenUserId).mockResolvedValue('users:owner' as never)
+    let slugCalls = 0
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ('userId' in args) {
+        return { _id: 'users:owner', role: 'user' }
+      }
+      if ('slug' in args) {
+        slugCalls += 1
+        if (slugCalls === 1) {
+          return {
+            _id: 'skills:1',
+            slug: 'demo',
+            ownerUserId: 'users:owner',
+            moderationStatus: 'hidden',
+            moderationReason: 'quality.low',
+            moderationFlags: ['flagged.suspicious'],
+            moderationVerdict: 'suspicious',
+            moderationReasonCodes: ['suspicious.dynamic_code_execution'],
+            moderationSummary: 'Detected: suspicious.dynamic_code_execution',
+            moderationEngineVersion: 'v2.0.0',
+            moderationEvaluatedAt: 5,
+            moderationEvidence: [
+              {
+                code: 'suspicious.dynamic_code_execution',
+                severity: 'critical',
+                file: 'index.ts',
+                line: 3,
+                message: 'Dynamic code execution detected.',
+                evidence: 'eval(payload)',
+              },
+            ],
+          }
+        }
+
+        return null
+      }
+      return null
+    })
+    const runMutation = vi.fn().mockResolvedValue(okRate())
+
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request('https://example.com/api/v1/skills/demo/moderation'),
+    )
+
+    expect(response.status).toBe(200)
+    const json = await response.json()
+    expect(json.moderation.legacyReason).toBe('quality.low')
+    expect(json.moderation.evidence[0].evidence).toBe('eval(payload)')
+  })
+
+  it('get moderation returns 404 for clean public skill', async () => {
+    let slugCalls = 0
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ('slug' in args) {
+        slugCalls += 1
+        if (slugCalls === 1) {
+          return {
+            _id: 'skills:1',
+            slug: 'demo',
+            ownerUserId: 'users:owner',
+            moderationVerdict: 'clean',
+            moderationReasonCodes: [],
+            moderationEvidence: [],
+          }
+        }
+
+        return {
+          skill: {
+            _id: 'skills:1',
+            slug: 'demo',
+            displayName: 'Demo',
+            summary: 's',
+            ownerUserId: 'users:owner',
+            tags: { latest: 'versions:1' },
+            stats: { downloads: 0, stars: 0, versions: 1, comments: 0 },
+            createdAt: 1,
+            updatedAt: 2,
+          },
+          latestVersion: null,
+          owner: null,
+          moderationInfo: {
+            isSuspicious: false,
+            isMalwareBlocked: false,
+            verdict: 'clean',
+            reasonCodes: [],
+            summary: null,
+            engineVersion: null,
+            updatedAt: null,
+          },
+        }
+      }
+      return null
+    })
+    const runMutation = vi.fn().mockResolvedValue(okRate())
+
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request('https://example.com/api/v1/skills/demo/moderation'),
+    )
+
+    expect(response.status).toBe(404)
   })
 
   it('lists versions', async () => {
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
       if ('slug' in args) {
-        return { _id: 'skills:1', slug: 'demo', displayName: 'Demo' }
+        return {
+          skill: { _id: 'skills:1', slug: 'demo', displayName: 'Demo' },
+          latestVersion: null,
+          owner: { handle: 'owner', displayName: 'Owner', image: null },
+        }
       }
       if ('skillId' in args && 'cursor' in args) {
         return {
@@ -681,10 +1035,25 @@ describe('httpApiV1 handlers', () => {
     expect(json.items[0].version).toBe('1.0.0')
   })
 
+  it('returns 404 for versions when the owner is banned', async () => {
+    const runQuery = vi.fn(async () => null)
+    const runMutation = vi.fn().mockResolvedValue(okRate())
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request('https://example.com/api/v1/skills/demo/versions?limit=1'),
+    )
+    expect(response.status).toBe(404)
+    expect(await response.text()).toBe('Skill not found')
+  })
+
   it('returns version detail', async () => {
     const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
       if ('slug' in args) {
-        return { _id: 'skills:1', slug: 'demo', displayName: 'Demo' }
+        return {
+          skill: { _id: 'skills:1', slug: 'demo', displayName: 'Demo' },
+          latestVersion: null,
+          owner: { handle: 'owner', displayName: 'Owner', image: null },
+        }
       }
       if ('skillId' in args && 'version' in args) {
         return {
@@ -715,8 +1084,417 @@ describe('httpApiV1 handlers', () => {
     expect(json.version.files[0].path).toBe('SKILL.md')
   })
 
+  it('returns 404 for version detail when the owner is banned', async () => {
+    const runQuery = vi.fn(async () => null)
+    const runMutation = vi.fn().mockResolvedValue(okRate())
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request('https://example.com/api/v1/skills/demo/versions/1.0.0'),
+    )
+    expect(response.status).toBe(404)
+    expect(await response.text()).toBe('Skill not found')
+  })
+
+  it('returns version detail security from vt analysis', async () => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ('slug' in args) {
+        return {
+          skill: { _id: 'skills:1', slug: 'demo', displayName: 'Demo' },
+          latestVersion: null,
+          owner: { handle: 'owner', displayName: 'Owner', image: null },
+        }
+      }
+      if ('skillId' in args && 'version' in args) {
+        return {
+          version: '1.0.0',
+          createdAt: 1,
+          changelog: 'c',
+          changelogSource: 'auto',
+          sha256hash: 'a'.repeat(64),
+          vtAnalysis: {
+            status: 'suspicious',
+            source: 'code_insight',
+            checkedAt: 123,
+          },
+          files: [],
+        }
+      }
+      return null
+    })
+    const runMutation = vi.fn().mockResolvedValue(okRate())
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request('https://example.com/api/v1/skills/demo/versions/1.0.0'),
+    )
+    expect(response.status).toBe(200)
+    const json = await response.json()
+    expect(json.version.security.status).toBe('suspicious')
+    expect(json.version.security.scanners.vt.normalizedStatus).toBe('suspicious')
+    expect(json.version.security.virustotalUrl).toContain('virustotal.com/gui/file/')
+  })
+
+  it('keeps hasWarnings true when llm dimensions include non-ok ratings', async () => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ('slug' in args) {
+        return {
+          skill: { _id: 'skills:1', slug: 'demo', displayName: 'Demo' },
+          latestVersion: null,
+          owner: { handle: 'owner', displayName: 'Owner', image: null },
+        }
+      }
+      if ('skillId' in args && 'version' in args) {
+        return {
+          version: '1.0.0',
+          createdAt: 1,
+          changelog: 'c',
+          changelogSource: 'auto',
+          sha256hash: 'a'.repeat(64),
+          llmAnalysis: {
+            status: 'completed',
+            verdict: 'benign',
+            checkedAt: 123,
+            dimensions: [
+              {
+                name: 'scope_alignment',
+                rating: 'warn',
+                rationale: 'broad install footprint',
+                evidence: '',
+              },
+            ],
+          },
+          files: [],
+        }
+      }
+      return null
+    })
+    const runMutation = vi.fn().mockResolvedValue(okRate())
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request('https://example.com/api/v1/skills/demo/versions/1.0.0'),
+    )
+    expect(response.status).toBe(200)
+    const json = await response.json()
+    expect(json.version.security.status).toBe('clean')
+    expect(json.version.security.hasWarnings).toBe(true)
+  })
+
+  it('returns scan payload for latest version', async () => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ('slug' in args) {
+        return {
+          skill: {
+            _id: 'skills:1',
+            slug: 'demo',
+            displayName: 'Demo',
+            summary: 's',
+            tags: { latest: 'versions:1' },
+            stats: {},
+            createdAt: 1,
+            updatedAt: 2,
+          },
+          latestVersion: {
+            version: '1.0.0',
+            createdAt: 1,
+            changelog: 'c',
+            changelogSource: 'auto',
+            sha256hash: 'b'.repeat(64),
+            vtAnalysis: {
+              status: 'clean',
+              checkedAt: 111,
+            },
+            llmAnalysis: {
+              status: 'completed',
+              verdict: 'suspicious',
+              confidence: 'high',
+              summary: 's',
+              checkedAt: 222,
+            },
+            files: [],
+          },
+          owner: { _id: 'users:1', handle: 'owner', displayName: 'Owner' },
+          moderationInfo: {
+            isPendingScan: false,
+            isMalwareBlocked: false,
+            isSuspicious: true,
+            isHiddenByMod: false,
+            isRemoved: false,
+          },
+        }
+      }
+      return null
+    })
+    const runMutation = vi.fn().mockResolvedValue(okRate())
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request('https://example.com/api/v1/skills/demo/scan'),
+    )
+    expect(response.status).toBe(200)
+    const json = await response.json()
+    expect(json.security.status).toBe('suspicious')
+    expect(json.security.hasScanResult).toBe(true)
+    expect(json.security.scanners.llm.verdict).toBe('suspicious')
+    expect(json.moderation.scope).toBe('skill')
+    expect(json.moderation.sourceVersion).toEqual({
+      version: '1.0.0',
+      createdAt: 1,
+    })
+    expect(json.moderation.matchesRequestedVersion).toBe(true)
+    expect(json.moderation.isSuspicious).toBe(true)
+  })
+
+  it('treats completed llm analysis without verdict as error', async () => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ('slug' in args) {
+        return {
+          skill: {
+            _id: 'skills:1',
+            slug: 'demo',
+            displayName: 'Demo',
+            summary: 's',
+            tags: { latest: 'versions:1' },
+            stats: {},
+            createdAt: 1,
+            updatedAt: 2,
+          },
+          latestVersion: {
+            version: '1.0.0',
+            createdAt: 1,
+            changelog: 'c',
+            changelogSource: 'auto',
+            sha256hash: 'c'.repeat(64),
+            llmAnalysis: {
+              status: 'completed',
+              summary: 'missing verdict',
+              checkedAt: 222,
+            },
+            files: [],
+          },
+          owner: { _id: 'users:1', handle: 'owner', displayName: 'Owner' },
+          moderationInfo: {
+            isPendingScan: false,
+            isMalwareBlocked: false,
+            isSuspicious: false,
+            isHiddenByMod: false,
+            isRemoved: false,
+          },
+        }
+      }
+      return null
+    })
+    const runMutation = vi.fn().mockResolvedValue(okRate())
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request('https://example.com/api/v1/skills/demo/scan'),
+    )
+    expect(response.status).toBe(200)
+    const json = await response.json()
+    expect(json.security.status).toBe('error')
+    expect(json.security.hasScanResult).toBe(false)
+    expect(json.security.scanners.llm.normalizedStatus).toBe('error')
+  })
+
+  it('keeps hasScanResult true when one scanner returns a definitive verdict', async () => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ('slug' in args) {
+        return {
+          skill: {
+            _id: 'skills:1',
+            slug: 'demo',
+            displayName: 'Demo',
+            summary: 's',
+            tags: { latest: 'versions:2' },
+            stats: {},
+            createdAt: 1,
+            updatedAt: 2,
+          },
+          latestVersion: {
+            _id: 'skillVersions:2',
+            version: '2.0.0',
+            createdAt: 2,
+            changelog: 'c',
+            changelogSource: 'auto',
+            sha256hash: 'd'.repeat(64),
+            vtAnalysis: {
+              status: 'clean',
+              checkedAt: 111,
+            },
+            llmAnalysis: {
+              status: 'error',
+              summary: 'scanner failed',
+              checkedAt: 222,
+            },
+            files: [],
+          },
+          owner: { _id: 'users:1', handle: 'owner', displayName: 'Owner' },
+          moderationInfo: {
+            isPendingScan: false,
+            isMalwareBlocked: false,
+            isSuspicious: false,
+            isHiddenByMod: false,
+            isRemoved: false,
+          },
+        }
+      }
+      return null
+    })
+    const runMutation = vi.fn().mockResolvedValue(okRate())
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request('https://example.com/api/v1/skills/demo/scan'),
+    )
+    expect(response.status).toBe(200)
+    const json = await response.json()
+    expect(json.security.status).toBe('error')
+    expect(json.security.hasScanResult).toBe(true)
+    expect(json.security.scanners.vt.normalizedStatus).toBe('clean')
+    expect(json.security.scanners.llm.normalizedStatus).toBe('error')
+  })
+
+  it('marks moderation as a latest-version snapshot when querying a historical version', async () => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ('slug' in args) {
+        return {
+          skill: {
+            _id: 'skills:1',
+            slug: 'demo',
+            displayName: 'Demo',
+            summary: 's',
+            tags: { latest: 'skillVersions:2', old: 'skillVersions:1' },
+            stats: {},
+            createdAt: 1,
+            updatedAt: 2,
+          },
+          latestVersion: {
+            _id: 'skillVersions:2',
+            version: '2.0.0',
+            createdAt: 2,
+            changelog: 'c2',
+            changelogSource: 'auto',
+            sha256hash: 'e'.repeat(64),
+            vtAnalysis: {
+              status: 'clean',
+              checkedAt: 222,
+            },
+            files: [],
+          },
+          owner: { _id: 'users:1', handle: 'owner', displayName: 'Owner' },
+          moderationInfo: {
+            isPendingScan: false,
+            isMalwareBlocked: false,
+            isSuspicious: false,
+            isHiddenByMod: false,
+            isRemoved: false,
+          },
+        }
+      }
+      if ('skillId' in args && 'version' in args) {
+        return {
+          _id: 'skillVersions:1',
+          version: '1.0.0',
+          createdAt: 1,
+          changelog: 'c1',
+          changelogSource: 'auto',
+          sha256hash: 'f'.repeat(64),
+          llmAnalysis: {
+            status: 'completed',
+            verdict: 'suspicious',
+            checkedAt: 123,
+          },
+          files: [],
+        }
+      }
+      return null
+    })
+    const runMutation = vi.fn().mockResolvedValue(okRate())
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request('https://example.com/api/v1/skills/demo/scan?version=1.0.0'),
+    )
+    expect(response.status).toBe(200)
+    const json = await response.json()
+    expect(json.version.version).toBe('1.0.0')
+    expect(json.security.status).toBe('suspicious')
+    expect(json.moderation.scope).toBe('skill')
+    expect(json.moderation.sourceVersion).toEqual({
+      version: '2.0.0',
+      createdAt: 2,
+    })
+    expect(json.moderation.matchesRequestedVersion).toBe(false)
+    expect(json.moderation.isSuspicious).toBe(false)
+  })
+
+  it('resolves scan by tag and reports moderation context against latest version', async () => {
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ('slug' in args) {
+        return {
+          skill: {
+            _id: 'skills:1',
+            slug: 'demo',
+            displayName: 'Demo',
+            summary: 's',
+            tags: { latest: 'skillVersions:2', old: 'skillVersions:1' },
+            stats: {},
+            createdAt: 1,
+            updatedAt: 2,
+          },
+          latestVersion: {
+            _id: 'skillVersions:2',
+            version: '2.0.0',
+            createdAt: 2,
+            changelog: 'c2',
+            changelogSource: 'auto',
+            sha256hash: '1'.repeat(64),
+            vtAnalysis: {
+              status: 'clean',
+              checkedAt: 222,
+            },
+            files: [],
+          },
+          owner: { _id: 'users:1', handle: 'owner', displayName: 'Owner' },
+          moderationInfo: {
+            isPendingScan: false,
+            isMalwareBlocked: false,
+            isSuspicious: false,
+            isHiddenByMod: false,
+            isRemoved: false,
+          },
+        }
+      }
+      if ('versionId' in args) {
+        return {
+          _id: 'skillVersions:1',
+          version: '1.0.0',
+          createdAt: 1,
+          changelog: 'c1',
+          changelogSource: 'auto',
+          sha256hash: '2'.repeat(64),
+          vtAnalysis: {
+            status: 'malicious',
+            checkedAt: 123,
+          },
+          files: [],
+        }
+      }
+      return null
+    })
+    const runMutation = vi.fn().mockResolvedValue(okRate())
+    const response = await __handlers.skillsGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request('https://example.com/api/v1/skills/demo/scan?tag=old'),
+    )
+    expect(response.status).toBe(200)
+    const json = await response.json()
+    expect(json.version.version).toBe('1.0.0')
+    expect(json.security.status).toBe('malicious')
+    expect(json.moderation.sourceVersion).toEqual({
+      version: '2.0.0',
+      createdAt: 2,
+    })
+    expect(json.moderation.matchesRequestedVersion).toBe(false)
+  })
+
   it('returns raw file content', async () => {
-    const version = {
+    const internalVersion = {
       version: '1.0.0',
       createdAt: 1,
       changelog: 'c',
@@ -731,19 +1509,28 @@ describe('httpApiV1 handlers', () => {
       ],
       softDeletedAt: undefined,
     }
-    const runQuery = vi.fn().mockResolvedValue({
-      skill: {
-        _id: 'skills:1',
-        slug: 'demo',
-        displayName: 'Demo',
-        summary: 's',
-        tags: {},
-        stats: {},
-        createdAt: 1,
-        updatedAt: 2,
-      },
-      latestVersion: version,
-      owner: null,
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ('slug' in args) {
+        return {
+          skill: {
+            _id: 'skills:1',
+            slug: 'demo',
+            displayName: 'Demo',
+            summary: 's',
+            tags: {},
+            stats: {},
+            createdAt: 1,
+            updatedAt: 2,
+            latestVersionId: 'skillVersions:1',
+          },
+          latestVersion: { _id: 'skillVersions:1', version: '1.0.0' },
+          owner: null,
+        }
+      }
+      if ('versionId' in args) {
+        return internalVersion
+      }
+      return null
     })
     const runMutation = vi.fn().mockResolvedValue(okRate())
     const storage = {
@@ -759,7 +1546,7 @@ describe('httpApiV1 handlers', () => {
   })
 
   it('returns 413 when raw file too large', async () => {
-    const version = {
+    const internalVersion = {
       version: '1.0.0',
       createdAt: 1,
       changelog: 'c',
@@ -774,19 +1561,28 @@ describe('httpApiV1 handlers', () => {
       ],
       softDeletedAt: undefined,
     }
-    const runQuery = vi.fn().mockResolvedValue({
-      skill: {
-        _id: 'skills:1',
-        slug: 'demo',
-        displayName: 'Demo',
-        summary: 's',
-        tags: {},
-        stats: {},
-        createdAt: 1,
-        updatedAt: 2,
-      },
-      latestVersion: version,
-      owner: null,
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ('slug' in args) {
+        return {
+          skill: {
+            _id: 'skills:1',
+            slug: 'demo',
+            displayName: 'Demo',
+            summary: 's',
+            tags: {},
+            stats: {},
+            createdAt: 1,
+            updatedAt: 2,
+            latestVersionId: 'skillVersions:1',
+          },
+          latestVersion: { _id: 'skillVersions:1', version: '1.0.0' },
+          owner: null,
+        }
+      }
+      if ('versionId' in args) {
+        return internalVersion
+      }
+      return null
     })
     const runMutation = vi.fn().mockResolvedValue(okRate())
     const response = await __handlers.skillsGetRouterV1Handler(
@@ -797,6 +1593,47 @@ describe('httpApiV1 handlers', () => {
   })
 
   it('publish json succeeds', async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValueOnce({
+      userId: 'users:1',
+      user: { handle: 'p' },
+    } as never)
+    vi.mocked(publishVersionForUser).mockResolvedValueOnce({
+      skillId: 's',
+      versionId: 'v',
+      embeddingId: 'e',
+    } as never)
+    const runMutation = vi.fn().mockResolvedValue(okRate())
+    const body = JSON.stringify({
+      slug: 'demo',
+      displayName: 'Demo',
+      version: '1.0.0',
+      changelog: 'c',
+      acceptLicenseTerms: true,
+      files: [
+        {
+          path: 'SKILL.md',
+          size: 1,
+          storageId: 'storage:1',
+          sha256: 'abc',
+          contentType: 'text/plain',
+        },
+      ],
+    })
+    const response = await __handlers.publishSkillV1Handler(
+      makeCtx({ runMutation }),
+      new Request('https://example.com/api/v1/skills', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer clh_test' },
+        body,
+      }),
+    )
+    expect(response.status).toBe(200)
+    const json = await response.json()
+    expect(json.ok).toBe(true)
+    expect(publishVersionForUser).toHaveBeenCalled()
+  })
+
+  it('publish json accepts legacy clients that omit license terms', async () => {
     vi.mocked(requireApiTokenUser).mockResolvedValueOnce({
       userId: 'users:1',
       user: { handle: 'p' },
@@ -831,12 +1668,46 @@ describe('httpApiV1 handlers', () => {
       }),
     )
     expect(response.status).toBe(200)
-    const json = await response.json()
-    expect(json.ok).toBe(true)
-    expect(publishVersionForUser).toHaveBeenCalled()
   })
 
   it('publish multipart succeeds', async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValueOnce({
+      userId: 'users:1',
+      user: { handle: 'p' },
+    } as never)
+    vi.mocked(publishVersionForUser).mockResolvedValueOnce({
+      skillId: 's',
+      versionId: 'v',
+      embeddingId: 'e',
+    } as never)
+    const runMutation = vi.fn().mockResolvedValue(okRate())
+    const form = new FormData()
+    form.set(
+      'payload',
+      JSON.stringify({
+        slug: 'demo',
+        displayName: 'Demo',
+        version: '1.0.0',
+        changelog: '',
+        acceptLicenseTerms: true,
+        tags: ['latest'],
+      }),
+    )
+    form.append('files', new Blob(['hello'], { type: 'text/plain' }), 'SKILL.md')
+    const response = await __handlers.publishSkillV1Handler(
+      makeCtx({ runMutation, storage: { store: vi.fn().mockResolvedValue('storage:1') } }),
+      new Request('https://example.com/api/v1/skills', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer clh_test' },
+        body: form,
+      }),
+    )
+    if (response.status !== 200) {
+      throw new Error(await response.text())
+    }
+  })
+
+  it('publish multipart accepts legacy clients that omit license terms', async () => {
     vi.mocked(requireApiTokenUser).mockResolvedValueOnce({
       userId: 'users:1',
       user: { handle: 'p' },
@@ -867,9 +1738,41 @@ describe('httpApiV1 handlers', () => {
         body: form,
       }),
     )
-    if (response.status !== 200) {
-      throw new Error(await response.text())
-    }
+    expect(response.status).toBe(200)
+  })
+
+  it('publish rejects explicit license refusal', async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValueOnce({
+      userId: 'users:1',
+      user: { handle: 'p' },
+    } as never)
+    const runMutation = vi.fn().mockResolvedValue(okRate())
+    const body = JSON.stringify({
+      slug: 'demo',
+      displayName: 'Demo',
+      version: '1.0.0',
+      changelog: 'c',
+      acceptLicenseTerms: false,
+      files: [
+        {
+          path: 'SKILL.md',
+          size: 1,
+          storageId: 'storage:1',
+          sha256: 'abc',
+          contentType: 'text/plain',
+        },
+      ],
+    })
+    const response = await __handlers.publishSkillV1Handler(
+      makeCtx({ runMutation }),
+      new Request('https://example.com/api/v1/skills', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer clh_test' },
+        body,
+      }),
+    )
+    expect(response.status).toBe(400)
+    expect(await response.text()).toMatch(/license terms must be accepted/i)
   })
 
   it('publish multipart ignores mac junk files', async () => {
@@ -892,6 +1795,7 @@ describe('httpApiV1 handlers', () => {
         displayName: 'Demo',
         version: '1.0.0',
         changelog: '',
+        acceptLicenseTerms: true,
         tags: ['latest'],
       }),
     )
@@ -986,6 +1890,177 @@ describe('httpApiV1 handlers', () => {
       }),
     )
     expect(response2.status).toBe(200)
+  })
+
+  it('transfer request requires auth', async () => {
+    vi.mocked(requireApiTokenUser).mockRejectedValueOnce(new Error('Unauthorized'))
+    const runMutation = vi.fn().mockResolvedValue(okRate())
+    const response = await __handlers.skillsPostRouterV1Handler(
+      makeCtx({ runMutation }),
+      new Request('https://example.com/api/v1/skills/demo/transfer', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ toUserHandle: 'alice' }),
+      }),
+    )
+    expect(response.status).toBe(401)
+  })
+
+  it('transfer request succeeds', async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: 'users:1',
+      user: { handle: 'p' },
+    } as never)
+
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ('slug' in args) return { _id: 'skills:1', slug: 'demo' }
+      return null
+    })
+    const runMutation = vi.fn(async (_mutation: unknown, args: Record<string, unknown>) => {
+      if ('key' in args) return okRate()
+      return { ok: true, transferId: 'skillOwnershipTransfers:1', toUserHandle: 'alice', expiresAt: 123 }
+    })
+
+    const response = await __handlers.skillsPostRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request('https://example.com/api/v1/skills/demo/transfer', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer clh_test', 'content-type': 'application/json' },
+        body: JSON.stringify({ toUserHandle: '@Alice' }),
+      }),
+    )
+    expect(response.status).toBe(200)
+    expect(runMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        actorUserId: 'users:1',
+        skillId: 'skills:1',
+        toUserHandle: '@Alice',
+      }),
+    )
+  })
+
+  it('transfer accept returns 404 when no pending request exists', async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: 'users:1',
+      user: { handle: 'p' },
+    } as never)
+
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if ('slug' in args) return { _id: 'skills:1', slug: 'demo' }
+      return null
+    })
+    const runMutation = vi.fn(async (_mutation: unknown, args: Record<string, unknown>) => {
+      if ('key' in args) return okRate()
+      return { ok: true }
+    })
+
+    const response = await __handlers.skillsPostRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request('https://example.com/api/v1/skills/demo/transfer/accept', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer clh_test' },
+      }),
+    )
+    expect(response.status).toBe(404)
+  })
+
+  it('rename endpoint forwards to renameOwnedSkillInternal', async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: 'users:1',
+      user: { handle: 'p' },
+    } as never)
+
+    const runMutation = vi.fn(async (_mutation: unknown, args: Record<string, unknown>) => {
+      if ('key' in args) return okRate()
+      return { ok: true, slug: 'demo-new', previousSlug: 'demo' }
+    })
+
+    const response = await __handlers.skillsPostRouterV1Handler(
+      makeCtx({ runMutation }),
+      new Request('https://example.com/api/v1/skills/demo/rename', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer clh_test', 'content-type': 'application/json' },
+        body: JSON.stringify({ newSlug: 'demo-new' }),
+      }),
+    )
+
+    expect(response.status).toBe(200)
+    expect(runMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        actorUserId: 'users:1',
+        slug: 'demo',
+        newSlug: 'demo-new',
+      }),
+    )
+  })
+
+  it('merge endpoint forwards to mergeOwnedSkillIntoCanonicalInternal', async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: 'users:1',
+      user: { handle: 'p' },
+    } as never)
+
+    const runMutation = vi.fn(async (_mutation: unknown, args: Record<string, unknown>) => {
+      if ('key' in args) return okRate()
+      return { ok: true, sourceSlug: 'demo-old', targetSlug: 'demo' }
+    })
+
+    const response = await __handlers.skillsPostRouterV1Handler(
+      makeCtx({ runMutation }),
+      new Request('https://example.com/api/v1/skills/demo-old/merge', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer clh_test', 'content-type': 'application/json' },
+        body: JSON.stringify({ targetSlug: 'demo' }),
+      }),
+    )
+
+    expect(response.status).toBe(200)
+    expect(runMutation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        actorUserId: 'users:1',
+        sourceSlug: 'demo-old',
+        targetSlug: 'demo',
+      }),
+    )
+  })
+
+  it('transfer list returns incoming transfers', async () => {
+    vi.mocked(requireApiTokenUser).mockResolvedValue({
+      userId: 'users:1',
+      user: { handle: 'p' },
+    } as never)
+
+    const runQuery = vi.fn(async (_query: unknown, args: Record<string, unknown>) => {
+      if (isRateLimitArgs(args)) return okRate()
+      if ('userId' in args) {
+        return [
+          {
+            _id: 'skillOwnershipTransfers:1',
+            skill: { _id: 'skills:1', slug: 'demo', displayName: 'Demo' },
+            fromUser: { _id: 'users:2', handle: 'alice', displayName: 'Alice' },
+            requestedAt: 100,
+            expiresAt: 200,
+          },
+        ]
+      }
+      return null
+    })
+    const runMutation = vi.fn().mockResolvedValue(okRate())
+
+    const response = await __handlers.transfersGetRouterV1Handler(
+      makeCtx({ runQuery, runMutation }),
+      new Request('https://example.com/api/v1/transfers/incoming', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer clh_test' },
+      }),
+    )
+    expect(response.status).toBe(200)
+    const payload = await response.json()
+    expect(payload.transfers).toHaveLength(1)
+    expect(payload.transfers[0]?.skill?.slug).toBe('demo')
   })
 
   it('ban user requires auth', async () => {

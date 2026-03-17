@@ -1,10 +1,15 @@
 import { Link } from '@tanstack/react-router'
-import type { ClawdisSkillMetadata } from 'clawhub-schema'
+import {
+  type ClawdisSkillMetadata,
+  PLATFORM_SKILL_LICENSE,
+  PLATFORM_SKILL_LICENSE_SUMMARY,
+} from 'clawhub-schema'
 import { Package } from 'lucide-react'
 import type { Doc, Id } from '../../convex/_generated/dataModel'
 import { getSkillBadges } from '../lib/badges'
 import { formatCompactStat, formatSkillStatsTriplet } from '../lib/numberFormat'
 import type { PublicSkill, PublicUser } from '../lib/publicUser'
+import { getRuntimeEnv } from '../lib/runtimeEnv'
 import { type LlmAnalysis, SecurityScanResults } from './SkillSecurityScanResults'
 import { SkillInstallCard } from './SkillInstallCard'
 import { UserBadge } from './UserBadge'
@@ -15,6 +20,8 @@ export type SkillModerationInfo = {
   isSuspicious: boolean
   isHiddenByMod: boolean
   isRemoved: boolean
+  overrideActive?: boolean
+  verdict?: 'clean' | 'suspicious' | 'malicious'
   reason?: string
 }
 
@@ -107,7 +114,17 @@ export function SkillHeader({
   clawdis,
   osLabels,
 }: SkillHeaderProps) {
+  const convexSiteUrl = getRuntimeEnv('VITE_CONVEX_SITE_URL') ?? 'https://clawhub.ai'
   const formattedStats = formatSkillStatsTriplet(skill.stats)
+  const suppressScanResults =
+    !isStaff &&
+    Boolean(modInfo?.overrideActive) &&
+    !modInfo?.isMalwareBlocked &&
+    !modInfo?.isSuspicious
+  const overrideScanMessage =
+    suppressScanResults
+      ? 'Security findings were reviewed by staff and cleared for public use.'
+      : null
 
   return (
     <>
@@ -188,6 +205,9 @@ export function SkillHeader({
                   Bundles the skill pack, CLI binary, and config requirements in one Nix install.
                 </div>
               ) : null}
+              <div className="skill-hero-note">
+                <strong>{PLATFORM_SKILL_LICENSE}</strong> · {PLATFORM_SKILL_LICENSE_SUMMARY}
+              </div>
               <div className="stat">
                 ⭐ {formattedStats.stars} · <Package size={14} aria-hidden="true" />{' '}
                 {formattedStats.downloads} · {formatCompactStat(skill.stats.installsCurrent ?? 0)} current
@@ -220,6 +240,7 @@ export function SkillHeader({
                   {badge}
                 </div>
               ))}
+              <div className="tag tag-accent">{PLATFORM_SKILL_LICENSE}</div>
               {isStaff && staffVisibilityTag ? (
                 <div className={`tag${isAutoHidden || isRemoved ? ' tag-accent' : ''}`}>
                   {staffVisibilityTag}
@@ -247,12 +268,17 @@ export function SkillHeader({
                   </Link>
                 ) : null}
               </div>
-              <SecurityScanResults
-                sha256hash={latestVersion?.sha256hash}
-                vtAnalysis={latestVersion?.vtAnalysis}
-                llmAnalysis={latestVersion?.llmAnalysis as LlmAnalysis | undefined}
-              />
-              {latestVersion?.sha256hash || latestVersion?.llmAnalysis ? (
+              {suppressScanResults ? (
+                <div className="skill-hero-note">{overrideScanMessage}</div>
+              ) : latestVersion?.sha256hash || latestVersion?.llmAnalysis || (latestVersion?.staticScan?.findings?.length ?? 0) > 0 ? (
+                <SecurityScanResults
+                  sha256hash={latestVersion?.sha256hash}
+                  vtAnalysis={latestVersion?.vtAnalysis}
+                  llmAnalysis={latestVersion?.llmAnalysis as LlmAnalysis | undefined}
+                  staticFindings={latestVersion?.staticScan?.findings}
+                />
+              ) : null}
+              {!suppressScanResults && (latestVersion?.sha256hash || latestVersion?.llmAnalysis || (latestVersion?.staticScan?.findings?.length ?? 0) > 0) ? (
                 <p className="scan-disclaimer">
                   Like a lobster shell, security has layers — review code before you run it.
                 </p>
@@ -266,7 +292,7 @@ export function SkillHeader({
               {!nixPlugin && !modInfo?.isMalwareBlocked && !modInfo?.isRemoved ? (
                 <a
                   className="btn btn-primary"
-                  href={`${import.meta.env.VITE_CONVEX_SITE_URL}/api/v1/download?slug=${skill.slug}`}
+                  href={`${convexSiteUrl}/api/v1/download?slug=${skill.slug}`}
                 >
                   Download zip
                 </a>

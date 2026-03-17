@@ -1,13 +1,23 @@
 import type { Doc } from '../../convex/_generated/dataModel'
+import { getRuntimeEnv } from '../lib/runtimeEnv'
 import { type LlmAnalysis, SecurityScanResults } from './SkillSecurityScanResults'
 
 type SkillVersionsPanelProps = {
   versions: Doc<'skillVersions'>[] | undefined
   nixPlugin: boolean
   skillSlug: string
+  suppressScanResults: boolean
+  suppressedMessage: string | null
 }
 
-export function SkillVersionsPanel({ versions, nixPlugin, skillSlug }: SkillVersionsPanelProps) {
+export function SkillVersionsPanel({
+  versions,
+  nixPlugin,
+  skillSlug,
+  suppressScanResults,
+  suppressedMessage,
+}: SkillVersionsPanelProps) {
+  const convexSiteUrl = getRuntimeEnv('VITE_CONVEX_SITE_URL') ?? 'https://clawhub.ai'
   return (
     <div className="tab-body">
       <div>
@@ -19,6 +29,7 @@ export function SkillVersionsPanel({ versions, nixPlugin, skillSlug }: SkillVers
             ? 'Review release history and changelog.'
             : 'Download older releases or scan the changelog.'}
         </p>
+        {suppressedMessage ? <p className="section-subtitle">{suppressedMessage}</p> : null}
       </div>
       <div className="version-scroll">
         <div className="version-list">
@@ -33,7 +44,7 @@ export function SkillVersionsPanel({ versions, nixPlugin, skillSlug }: SkillVers
                 </div>
                 <div style={{ color: '#5c554e', whiteSpace: 'pre-wrap' }}>{version.changelog}</div>
                 <div className="version-scan-results">
-                  {version.sha256hash || version.llmAnalysis ? (
+                  {!suppressScanResults && (version.sha256hash || version.llmAnalysis) ? (
                     <SecurityScanResults
                       sha256hash={version.sha256hash}
                       vtAnalysis={version.vtAnalysis}
@@ -47,7 +58,7 @@ export function SkillVersionsPanel({ versions, nixPlugin, skillSlug }: SkillVers
                 <div className="version-actions">
                   <a
                     className="btn version-zip"
-                    href={`${import.meta.env.VITE_CONVEX_SITE_URL}/api/v1/download?slug=${skillSlug}&version=${version.version}`}
+                    href={`${convexSiteUrl}/api/v1/download?slug=${skillSlug}&version=${version.version}`}
                   >
                     Zip
                   </a>

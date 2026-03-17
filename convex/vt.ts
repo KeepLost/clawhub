@@ -2,7 +2,7 @@ import { v } from 'convex/values'
 import { internal } from './_generated/api'
 import type { Id } from './_generated/dataModel'
 import type { ActionCtx } from './_generated/server'
-import { action, internalAction, internalMutation } from './_generated/server'
+import { action, internalAction, internalMutation } from './functions'
 import { buildDeterministicZip } from './lib/skillZip'
 
 /**
@@ -122,6 +122,8 @@ type VTFileResponse = {
   }
 }
 
+type VTAnalysisStats = NonNullable<VTFileResponse['data']['attributes']['last_analysis_stats']>
+
 type ScanQueueHealth = {
   queueSize: number
   staleCount: number
@@ -203,6 +205,7 @@ type StaleModerationReasonSkill = {
   slug: string
   currentReason: string
   vtStatus: string | null
+  sha256hash: string | null
 }
 
 type FixNullModerationReasonsResult = {
@@ -244,6 +247,15 @@ function shouldActivateWhenVtUnavailable(skill: SkillActivationCandidate | null 
   if (skill.moderationStatus === 'active') return false
   const reason = skill.moderationReason
   return typeof reason === 'string' && VT_PENDING_REASONS.has(reason)
+}
+
+function statusFromAvStats(stats?: VTAnalysisStats | null): 'malicious' | 'suspicious' | 'clean' | null {
+  if (!stats) return null
+  if (stats.malicious > 0) return 'malicious'
+  if (stats.suspicious > 0) return 'suspicious'
+  // Keep this aligned with fetchResults: undetected-only should stay pending.
+  if (stats.harmless > 0) return 'clean'
+  return null
 }
 
 async function activateSkillWhenVtUnavailable(ctx: ActionCtx, skillId: Id<'skills'>) {
@@ -294,15 +306,8 @@ export const fetchResults = action({
       if (aiResult?.verdict) {
         // Prioritize AI Analysis (Code Insight)
         status = verdictToStatus(normalizeVerdict(aiResult.verdict))
-      } else if (stats) {
-        // Fallback to AV engines
-        if (stats.malicious > 0) {
-          status = 'malicious'
-        } else if (stats.suspicious > 0) {
-          status = 'suspicious'
-        } else if (stats.harmless > 0) {
-          status = 'clean'
-        }
+      } else {
+        status = statusFromAvStats(stats) ?? 'pending'
       }
 
       return {
@@ -566,9 +571,40 @@ export const pollPendingScans = internalAction({
         )
 
         if (!aiResult) {
-          // No Code Insight - trigger a rescan to get it
+          // No Code Insight - check AV engine stats as fallback
+          const stats = vtResult.data.attributes.last_analysis_stats
+          const status = statusFromAvStats(stats)
+          let source = 'engines'
+
+          if (status) {
+            // We have a verdict from AV engines - update the skill
+            console.log(
+              `[vt:pollPendingScans] Hash ${sha256hash} verdict from AV engines: ${status}`,
+            )
+
+            // Cache VT analysis in version
+            await ctx.runMutation(internal.skills.updateVersionScanResultsInternal, {
+              versionId,
+              vtAnalysis: {
+                status,
+                source,
+                checkedAt: Date.now(),
+              },
+            })
+
+            // VT finalizes moderation visibility for newly published versions.
+            await ctx.runMutation(internal.skills.approveSkillByHashInternal, {
+              sha256hash,
+              scanner: 'vt',
+              status,
+            })
+            updated++
+            continue
+          }
+
+          // No verdict from engines either - trigger a rescan to get Code Insight
           console.log(
-            `[vt:pollPendingScans] Hash ${sha256hash} has no Code Insight, requesting rescan`,
+            `[vt:pollPendingScans] Hash ${sha256hash} has no Code Insight or engine stats, requesting rescan`,
           )
           await requestRescan(apiKey, sha256hash)
           // Check if we've exceeded max attempts — write stale vtAnalysis so it
@@ -684,6 +720,7 @@ async function requestRescan(apiKey: string, sha256hash: string): Promise<boolea
 }
 
 export const __test = {
+  statusFromAvStats,
   shouldActivateWhenVtUnavailable,
 }
 
@@ -741,7 +778,25 @@ export const backfillPendingScans = internalAction({
         )
 
         if (!aiResult) {
+          // No Code Insight - check AV engine stats as fallback
+          const stats = vtResult.data.attributes.last_analysis_stats
+          const status = statusFromAvStats(stats)
+
+          if (status) {
+            // We have a verdict from AV engines - update the skill
+            console.log(`[vt:backfill] Hash ${sha256hash} verdict from AV engines: ${status}`)
+            await ctx.runMutation(internal.skills.approveSkillByHashInternal, {
+              sha256hash,
+              scanner: 'vt',
+              status,
+            })
+            updated++
+            continue
+          }
+
+          // No verdict from engines either - trigger a rescan
           if (triggerRescans) {
+            console.log(`[vt:backfill] Hash ${sha256hash} has no Code Insight or engine stats, requesting rescan`)
             await requestRescan(apiKey, sha256hash)
             rescansRequested++
           }
@@ -840,14 +895,56 @@ export const rescanActiveSkills = internalAction({
         )
 
         if (!aiResult) {
+          // No Code Insight - check AV engine stats as fallback
+          const stats = vtResult.data.attributes.last_analysis_stats
+          const status = statusFromAvStats(stats)
+          let source = 'engines'
+
+          if (!status) {
+            // No verdict from engines either - keep as pending
+            await ctx.runMutation(internal.skills.updateVersionScanResultsInternal, {
+              versionId,
+              vtAnalysis: {
+                status: 'pending',
+                checkedAt: Date.now(),
+              },
+            })
+            accUnchanged++
+            continue
+          }
+
+          // We have a verdict from AV engines - continue with normal flow
+          console.log(`[vt:rescan] ${slug} verdict from AV engines: ${status}`)
+
           await ctx.runMutation(internal.skills.updateVersionScanResultsInternal, {
             versionId,
             vtAnalysis: {
-              status: 'pending',
+              status,
+              source,
               checkedAt: Date.now(),
             },
           })
-          accUnchanged++
+
+          if (status === 'malicious' || status === 'suspicious') {
+            console.warn(`[vt:rescan] ${slug}: verdict changed to ${status}!`)
+            accFlaggedSkills.push({ slug, status })
+            await ctx.runMutation(internal.skills.escalateByVtInternal, {
+              sha256hash,
+              status,
+            })
+            accUpdated++
+          } else if (wasFlagged && status === 'clean') {
+            // Verdict improved from suspicious → clean: clear the stale moderation flag
+            console.log(`[vt:rescan] ${slug}: verdict improved to clean, clearing suspicious flag`)
+            await ctx.runMutation(internal.skills.approveSkillByHashInternal, {
+              sha256hash,
+              scanner: 'vt',
+              status,
+            })
+            accUpdated++
+          } else {
+            accUnchanged++
+          }
           continue
         }
 
@@ -1121,8 +1218,30 @@ export const backfillActiveSkillsVTCache = internalAction({
         )
 
         if (!aiResult) {
-          console.log(`[vt:backfillActive] ${slug}: no Code Insight yet`)
-          noResults++
+          // No Code Insight - check AV engine stats as fallback
+          const stats = vtResult.data.attributes.last_analysis_stats
+          const status = statusFromAvStats(stats)
+          let source = 'engines'
+
+          if (!status) {
+            console.log(`[vt:backfillActive] ${slug}: no Code Insight or engine stats yet`)
+            noResults++
+            continue
+          }
+
+          // We have a verdict from AV engines - update the version
+          console.log(`[vt:backfillActive] ${slug}: updated with ${status} (from AV engines)`)
+
+          await ctx.runMutation(internal.skills.updateVersionScanResultsInternal, {
+            versionId,
+            sha256hash,
+            vtAnalysis: {
+              status,
+              source,
+              checkedAt: Date.now(),
+            },
+          })
+          updated++
           continue
         }
 
@@ -1258,7 +1377,8 @@ export const fixNullModerationStatus = internalAction({
 
 /**
  * Sync moderationReason for skills that have vtAnalysis cached but stale moderationReason.
- * This updates skills stuck at 'scanner.vt.pending' or 'pending.scan' to match their cached vtAnalysis.
+ * Uses the canonical approveSkillByHashInternal to keep all moderation fields in sync
+ * (moderationStatus, moderationFlags, moderationVerdict, moderationReasonCodes, isSuspicious).
  */
 export const syncModerationReasons = internalAction({
   args: { batchSize: v.optional(v.number()) },
@@ -1280,21 +1400,35 @@ export const syncModerationReasons = internalAction({
     let synced = 0
     let noVtAnalysis = 0
 
-    for (const { skillId, versionId: _versionId, slug, currentReason, vtStatus } of skills) {
+    for (const { skillId, slug, currentReason, vtStatus, sha256hash } of skills) {
       if (!vtStatus) {
         noVtAnalysis++
         continue
       }
 
-      // Map vtAnalysis.status to moderationReason
-      const newReason = `scanner.vt.${vtStatus}` as const
+      if (sha256hash) {
+        await ctx.runMutation(internal.skills.approveSkillByHashInternal, {
+          sha256hash,
+          scanner: 'vt',
+          status: vtStatus,
+        })
+      } else if (vtStatus === 'malicious') {
+        // Legacy no-hash + malicious: must hide immediately even without full reconciliation.
+        await ctx.runMutation(internal.skills.escalateSkillByIdInternal, {
+          skillId,
+          moderationReason: `scanner.vt.${vtStatus}`,
+          moderationFlags: ['blocked.malware'],
+          moderationStatus: 'hidden',
+        })
+      } else {
+        // Legacy no-hash + clean/suspicious: partial reason update unblocks stale rows.
+        await ctx.runMutation(internal.skills.updateSkillModerationReasonInternal, {
+          skillId,
+          moderationReason: `scanner.vt.${vtStatus}`,
+        })
+      }
 
-      await ctx.runMutation(internal.skills.updateSkillModerationReasonInternal, {
-        skillId,
-        moderationReason: newReason,
-      })
-
-      console.log(`[vt:syncModeration] ${slug}: ${currentReason} -> ${newReason}`)
+      console.log(`[vt:syncModeration] ${slug}: ${currentReason} -> scanner.vt.${vtStatus}`)
       synced++
     }
 

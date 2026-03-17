@@ -2,6 +2,7 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import { useAction, useQuery } from 'convex/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../../convex/_generated/api'
+import { convexHttp } from '../convex/client'
 import { InstallSwitcher } from '../components/InstallSwitcher'
 import { SkillCard } from '../components/SkillCard'
 import { SkillStatsTripletLine } from '../components/SkillStats'
@@ -29,15 +30,26 @@ function SkillsHome() {
     latestVersion?: unknown
   }
 
-  const highlighted =
-    (useQuery(api.skills.listHighlightedPublic, { limit: 6 }) as SkillPageEntry[]) ?? []
-  const popularResult = useQuery(api.skills.listPublicPageV2, {
-    paginationOpts: { cursor: null, numItems: 12 },
-    sort: 'downloads',
-    dir: 'desc',
-    nonSuspiciousOnly: true,
-  }) as { page: SkillPageEntry[] } | undefined
-  const popular = popularResult?.page ?? []
+  const [highlighted, setHighlighted] = useState<SkillPageEntry[]>([])
+  const [popular, setPopular] = useState<SkillPageEntry[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+    convexHttp
+      .query(api.skills.listHighlightedPublic, { limit: 6 })
+      .then((r) => { if (!cancelled) setHighlighted(r as SkillPageEntry[]) })
+      .catch(() => {})
+    convexHttp
+      .query(api.skills.listPublicPageV4, {
+        numItems: 12,
+        sort: 'downloads',
+        dir: 'desc',
+        nonSuspiciousOnly: true,
+      })
+      .then((r) => { if (!cancelled) setPopular((r as { page: SkillPageEntry[] }).page) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [])
 
   return (
     <main>

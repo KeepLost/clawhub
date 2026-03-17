@@ -2,24 +2,29 @@ import { v } from 'convex/values'
 import { internal } from './_generated/api'
 import type { Doc, Id } from './_generated/dataModel'
 import type { QueryCtx } from './_generated/server'
-import { action, internalQuery } from './_generated/server'
+import { action, internalQuery } from './functions'
 import { isSkillHighlighted } from './lib/badges'
 import { generateEmbedding } from './lib/embeddings'
+import type { HydratableSkill } from './lib/public'
 import { toPublicSkill, toPublicSoul, toPublicUser } from './lib/public'
 import { matchesExactTokens, tokenize } from './lib/searchText'
 import { isSkillSuspicious } from './lib/skillSafety'
+import { digestToHydratableSkill, digestToOwnerInfo } from './lib/skillSearchDigest'
 
-type OwnerInfo = { handle: string | null; owner: ReturnType<typeof toPublicUser> | null }
+type OwnerInfo = { ownerHandle: string | null; owner: ReturnType<typeof toPublicUser> | null }
 
 function makeOwnerInfoGetter(ctx: Pick<QueryCtx, 'db'>) {
   const ownerCache = new Map<Id<'users'>, Promise<OwnerInfo>>()
   return (ownerUserId: Id<'users'>) => {
     const cached = ownerCache.get(ownerUserId)
     if (cached) return cached
-    const ownerPromise = ctx.db.get(ownerUserId).then((ownerDoc) => ({
-      handle: ownerDoc?.handle ?? (ownerDoc?._id ? String(ownerDoc._id) : null),
-      owner: toPublicUser(ownerDoc),
-    }))
+    const ownerPromise = ctx.db.get(ownerUserId).then((ownerDoc) => {
+      const owner = toPublicUser(ownerDoc)
+      return {
+        ownerHandle: owner?.handle ?? owner?.name ?? null,
+        owner,
+      }
+    })
     ownerCache.set(ownerUserId, ownerPromise)
     return ownerPromise
   }
@@ -130,6 +135,7 @@ export const searchSkills: ReturnType<typeof action> = action({
     const maxCandidate = Math.min(Math.max(limit * 10, 200), 256)
     let candidateLimit = Math.min(Math.max(limit * 3, 50), 256)
     let hydrated: SkillSearchEntry[] = []
+    const seenEmbeddingIds = new Set<Id<'skillEmbeddings'>>()
     let scoreById = new Map<Id<'skillEmbeddings'>, number>()
     let exactMatches: SkillSearchEntry[] = []
 
@@ -140,10 +146,21 @@ export const searchSkills: ReturnType<typeof action> = action({
         filter: (q) => q.or(q.eq('visibility', 'latest'), q.eq('visibility', 'latest-approved')),
       })
 
-      hydrated = (await ctx.runQuery(internal.search.hydrateResults, {
-        embeddingIds: results.map((result) => result._id),
-        nonSuspiciousOnly: args.nonSuspiciousOnly,
-      })) as SkillSearchEntry[]
+      // Only hydrate embedding IDs we haven't seen yet (incremental).
+      // Track all attempted IDs, not just successful hydrations, to avoid
+      // re-hydrating filtered-out entries (soft-deleted, suspicious) each loop.
+      const newEmbeddingIds = results
+        .map((r) => r._id)
+        .filter((id) => !seenEmbeddingIds.has(id))
+      for (const id of newEmbeddingIds) seenEmbeddingIds.add(id)
+
+      if (newEmbeddingIds.length > 0) {
+        const newEntries = (await ctx.runQuery(internal.search.hydrateResults, {
+          embeddingIds: newEmbeddingIds,
+          nonSuspiciousOnly: args.nonSuspiciousOnly,
+        })) as SkillSearchEntry[]
+        hydrated = [...hydrated, ...newEntries]
+      }
 
       scoreById = new Map<Id<'skillEmbeddings'>, number>(
         results.map((result) => [result._id, result._score]),
@@ -211,6 +228,7 @@ export const hydrateResults = internalQuery({
     nonSuspiciousOnly: v.optional(v.boolean()),
   },
   handler: async (ctx, args): Promise<SkillSearchEntry[]> => {
+    // Only used as fallback when digest doesn't have owner data.
     const getOwnerInfo = makeOwnerInfoGetter(ctx)
 
     const entries: Array<SkillSearchEntry | null> = await Promise.all(
@@ -225,18 +243,29 @@ export const hydrateResults = internalQuery({
           ? lookup.skillId
           : await ctx.db.get(embeddingId).then((e) => e?.skillId)
         if (!skillId) return null
-        const skill = await ctx.db.get(skillId)
+        // Use lightweight digest (~800 bytes) instead of full skill doc (~3-5KB).
+        const digest = await ctx.db
+          .query('skillSearchDigest')
+          .withIndex('by_skill', (q) => q.eq('skillId', skillId))
+          .unique()
+        const skill: HydratableSkill | null = digest
+          ? digestToHydratableSkill(digest)
+          : await ctx.db.get(skillId)
         if (!skill || skill.softDeletedAt) return null
         if (args.nonSuspiciousOnly && isSkillSuspicious(skill)) return null
-        const ownerInfo = await getOwnerInfo(skill.ownerUserId)
+        // Use pre-resolved owner from digest to avoid reading the users table.
+        // Fall back to live lookup when digest owner is null (deactivated/deleted user).
+        const preResolved = digest ? digestToOwnerInfo(digest) : null
+        const resolved =
+          preResolved?.owner ? preResolved : await getOwnerInfo(skill.ownerUserId)
         const publicSkill = toPublicSkill(skill)
-        if (!publicSkill) return null
+        if (!publicSkill || !resolved.owner) return null
         return {
           embeddingId,
           skill: publicSkill,
           version: null as Doc<'skillVersions'> | null,
-          ownerHandle: ownerInfo.handle,
-          owner: ownerInfo.owner,
+          ownerHandle: resolved.ownerHandle,
+          owner: resolved.owner,
         }
       }),
     )
@@ -256,8 +285,14 @@ export const lexicalFallbackSkills = internalQuery({
   handler: async (ctx, args): Promise<SkillSearchEntry[]> => {
     const limit = Math.min(Math.max(args.limit ?? 200, 10), FALLBACK_SCAN_LIMIT)
     const seenSkillIds = new Set<Id<'skills'>>()
-    const candidateSkills: Doc<'skills'>[] = []
+    const candidates: HydratableSkill[] = []
+    // Keep digest rows around so we can resolve owner info without hitting users table.
+    const preResolvedOwners = new Map<
+      Id<'skills'>,
+      { ownerHandle: string | null; owner: ReturnType<typeof toPublicUser> | null }
+    >()
 
+    // Exact slug match via the skills table (only one row, cheap).
     const slugQuery = args.query.trim().toLowerCase()
     if (/^[a-z0-9][a-z0-9-]*$/.test(slugQuery)) {
       const exactSlugSkill = await ctx.db
@@ -270,48 +305,54 @@ export const lexicalFallbackSkills = internalQuery({
         (!args.nonSuspiciousOnly || !isSkillSuspicious(exactSlugSkill))
       ) {
         seenSkillIds.add(exactSlugSkill._id)
-        candidateSkills.push(exactSlugSkill)
+        candidates.push(exactSlugSkill)
       }
     }
 
-    const recentSkills = await ctx.db
-      .query('skills')
+    // Scan recent active digests (~800 bytes each) instead of full skill docs (~3-5KB).
+    const recentDigests = await ctx.db
+      .query('skillSearchDigest')
       .withIndex('by_active_updated', (q) => q.eq('softDeletedAt', undefined))
       .order('desc')
       .take(FALLBACK_SCAN_LIMIT)
 
-    for (const skill of recentSkills) {
-      if (seenSkillIds.has(skill._id)) continue
+    for (const digest of recentDigests) {
+      if (seenSkillIds.has(digest.skillId)) continue
+      const skill = digestToHydratableSkill(digest)
       if (args.nonSuspiciousOnly && isSkillSuspicious(skill)) continue
-      seenSkillIds.add(skill._id)
-      candidateSkills.push(skill)
+      seenSkillIds.add(digest.skillId)
+      candidates.push(skill)
+      // Pre-resolve owner from digest to avoid users table reads.
+      const ownerInfo = digestToOwnerInfo(digest)
+      if (ownerInfo) preResolvedOwners.set(digest.skillId, ownerInfo)
     }
 
-    const matched = candidateSkills.filter((skill) =>
+    const matched = candidates.filter((skill) =>
       matchesExactTokens(args.queryTokens, [skill.displayName, skill.slug, skill.summary]),
     )
     if (matched.length === 0) return []
 
+    // Only used as fallback for the exact slug match (no digest available).
     const getOwnerInfo = makeOwnerInfoGetter(ctx)
 
     const entries = await Promise.all(
       matched.map(async (skill) => {
-        const ownerInfo = await getOwnerInfo(skill.ownerUserId)
+        const preResolved = preResolvedOwners.get(skill._id)
+        const resolved =
+          preResolved?.owner ? preResolved : await getOwnerInfo(skill.ownerUserId)
         const publicSkill = toPublicSkill(skill)
-        if (!publicSkill) return null
+        if (!publicSkill || !resolved.owner) return null
         return {
           skill: publicSkill,
           version: null as Doc<'skillVersions'> | null,
-          ownerHandle: ownerInfo.handle,
-          owner: ownerInfo.owner,
+          ownerHandle: resolved.ownerHandle,
+          owner: resolved.owner,
         }
       }),
     )
-    const validEntries = entries.filter((entry): entry is SkillSearchEntry => entry !== null)
+    const validEntries = entries.filter(Boolean) as SkillSearchEntry[]
     if (validEntries.length === 0) return []
 
-    // Skills already have badges from their docs (via toPublicSkill).
-    // No need for a separate badge table lookup.
     const filtered = args.highlightedOnly
       ? validEntries.filter((entry) => isSkillHighlighted(entry.skill))
       : validEntries

@@ -13,6 +13,7 @@ import {
 } from './cli/commands/delete.js'
 import { cmdInspect } from './cli/commands/inspect.js'
 import { cmdBanUser, cmdSetRole } from './cli/commands/moderation.js'
+import { cmdMergeSkill, cmdRenameSkill } from './cli/commands/ownership.js'
 import { cmdPublish } from './cli/commands/publish.js'
 import {
   cmdExplore,
@@ -24,6 +25,13 @@ import {
 } from './cli/commands/skills.js'
 import { cmdStarSkill } from './cli/commands/star.js'
 import { cmdSync } from './cli/commands/sync.js'
+import {
+  cmdTransferAccept,
+  cmdTransferCancel,
+  cmdTransferList,
+  cmdTransferReject,
+  cmdTransferRequest,
+} from './cli/commands/transfer.js'
 import { cmdUnstarSkill } from './cli/commands/unstar.js'
 import { configureCommanderHelp, styleEnvBlock, styleTitle } from './cli/helpStyle.js'
 import { DEFAULT_REGISTRY, DEFAULT_SITE } from './cli/registry.js'
@@ -316,6 +324,30 @@ program
     await cmdUnhideSkill(opts, slug, options, isInputAllowed())
   })
 
+const skill = program.command('skill').description('Manage published skills')
+
+skill
+  .command('rename')
+  .description('Rename a published skill and keep the old slug as a redirect')
+  .argument('<slug>', 'Current skill slug')
+  .argument('<new-slug>', 'New canonical slug')
+  .option('--yes', 'Skip confirmation')
+  .action(async (slug, newSlug, options) => {
+    const opts = await resolveGlobalOpts()
+    await cmdRenameSkill(opts, slug, newSlug, options, isInputAllowed())
+  })
+
+skill
+  .command('merge')
+  .description('Merge one owned skill into another and redirect the old slug')
+  .argument('<source-slug>', 'Source skill slug')
+  .argument('<target-slug>', 'Target canonical slug')
+  .option('--yes', 'Skip confirmation')
+  .action(async (sourceSlug, targetSlug, options) => {
+    const opts = await resolveGlobalOpts()
+    await cmdMergeSkill(opts, sourceSlug, targetSlug, options, isInputAllowed())
+  })
+
 program
   .command('ban-user')
   .description('Ban a user and delete owned skills (moderator/admin only)')
@@ -340,6 +372,59 @@ program
   .action(async (handleOrId, role, options) => {
     const opts = await resolveGlobalOpts()
     await cmdSetRole(opts, handleOrId, role, options, isInputAllowed())
+  })
+
+const transfer = program.command('transfer').description('Transfer skill ownership')
+
+transfer
+  .command('request')
+  .description('Request skill transfer to another user')
+  .argument('<slug>', 'Skill slug')
+  .argument('<handle>', 'Recipient handle (e.g., @username)')
+  .option('--message <text>', 'Optional message for recipient')
+  .option('--yes', 'Skip confirmation')
+  .action(async (slug, handle, options) => {
+    const opts = await resolveGlobalOpts()
+    await cmdTransferRequest(opts, slug, handle, options, isInputAllowed())
+  })
+
+transfer
+  .command('list')
+  .description('List pending transfer requests')
+  .option('--outgoing', 'Show outgoing transfer requests')
+  .action(async (options) => {
+    const opts = await resolveGlobalOpts()
+    await cmdTransferList(opts, options)
+  })
+
+transfer
+  .command('accept')
+  .description('Accept incoming transfer for a skill')
+  .argument('<slug>', 'Skill slug')
+  .option('--yes', 'Skip confirmation')
+  .action(async (slug, options) => {
+    const opts = await resolveGlobalOpts()
+    await cmdTransferAccept(opts, slug, options, isInputAllowed())
+  })
+
+transfer
+  .command('reject')
+  .description('Reject incoming transfer for a skill')
+  .argument('<slug>', 'Skill slug')
+  .option('--yes', 'Skip confirmation')
+  .action(async (slug, options) => {
+    const opts = await resolveGlobalOpts()
+    await cmdTransferReject(opts, slug, options, isInputAllowed())
+  })
+
+transfer
+  .command('cancel')
+  .description('Cancel outgoing transfer for a skill')
+  .argument('<slug>', 'Skill slug')
+  .option('--yes', 'Skip confirmation')
+  .action(async (slug, options) => {
+    const opts = await resolveGlobalOpts()
+    await cmdTransferCancel(opts, slug, options, isInputAllowed())
   })
 
 program
